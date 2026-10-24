@@ -4,6 +4,16 @@
       model.pmx          <- 模型本体（只有一个 pmx 时文件名随意）
       tex\...            <- 贴图，按 PMX 里写的相对路径查找；找不到时再按文件名找
 
+一个文件夹里可以放多个 pmx（比如同一个角色的两个配色）：
+
+  Models\sour暄\
+      Black.pmx
+      White.pmx
+
+它们会作为两个独立条目出现在模型页里，名字是「sour暄 · Black」「sour暄 · White」，
+可以分别预览、分别应用，隐藏/发光设置也各存一份。有 model.pmx 时默认选它，
+否则按文件名排序取第一个。
+
 第一次启动游戏（以及之后每次启动，直到勾选“不再显示”）会弹出“使用须知”窗口：
 使用任何模型前，请先阅读并遵守该模型自带的 README 中的使用条款
 （署名要求、可否修改、可否商用、禁止事项等）。勾选“不再显示”再点“我同意”，
@@ -32,7 +42,8 @@ F2 打开 MMS 控制台：总开关（关闭后恢复游戏原角色）、改菜
 （默认值也可以在配置 [Interface] MenuKey / ConsoleKey 里改；F6 是游戏自带的 HUD 隐藏键，
 F9/F12 常被截图工具占用。）
 也可以在 BepInEx\config\com.miku.subnautica.playerreplacer.cfg 里
-设置 [Model] ActiveModel = 子文件夹名（留空 = 用 Models 里找到的第一个模型）、
+设置 [Model] ActiveModel = 子文件夹名（留空 = 用 Models 里找到的第一个模型；
+同文件夹多个 pmx 时其余条目写“文件夹名/文件名”，如 sour暄/White）、
 [General] Enabled = true（总开关，等于控制台里的“MMS 总开关”）、
 [General] TermsAccepted / TermsDontShowAgain（使用须知窗口的答案，一般不用手改）。
 
