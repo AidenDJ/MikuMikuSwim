@@ -177,7 +177,7 @@ namespace MikuPlayerReplacer
         public const string PluginGuid = "com.miku.subnautica.playerreplacer";
         // MMS = MikuMikuSwim: the mod's short name, also the PDA tab label.
         public const string PluginName = "MMS";
-        public const string PluginVersion = "0.1.12";
+        public const string PluginVersion = "0.1.13";
 
         // ---- configuration ----
         private ConfigEntry<float> _scale;
@@ -2863,14 +2863,9 @@ namespace MikuPlayerReplacer
         /// </summary>
         private void ApplyHeadLook()
         {
-            // Only in the third/second-person views. In first person the camera
-            // sits at a fixed point inside the model's head: rotating the skull
-            // around it swings the twintail roots into view, and the player cannot
-            // see the head anyway. The view blend fades the effect in/out so the
-            // transition does not snap. _headLookFade removes the follow while
-            // the player is idle (so only the camera moves and nothing on the
-            // model does) and during cinematics, where the animation's own head
-            // pose is what should play.
+            // Third/second-person look fades out at idle. First-person and
+            // cinematic look are applied from the absolute camera frame by
+            // ApplyFirstPersonHeadLook, without this idle fade or additive tilt.
             float blend = _viewApplied != 0 ? _viewBlend : 0f;
             // Smoothstep, not linear: the fade in/out is 0.3/0.8 s, and easing
             // both ends makes the head leave and re-enter the idle pose with no
@@ -15628,7 +15623,7 @@ namespace MikuPlayerReplacer
                 // on the camera rig only). Add the glance on top of the retargeted
                 // pose, after the head alignment so the body is not shifted.
                 ApplyHeadLook();
-                ApplyCinematicHeadLook();
+                ApplyFirstPersonHeadLook();
 
                 // Where the retargeted hand sits relative to the game hand; only a
                 // diagnostic now that Model mode does not bend the arm at all.
@@ -17149,6 +17144,16 @@ namespace MikuPlayerReplacer
     [DefaultExecutionOrder(32000)]
     internal sealed class LateRetargetHost : MonoBehaviour
     {
+        private void OnEnable()
+        {
+            Camera.onPreCull += MikuPlayerReplacerPlugin.ProtectFirstPersonCamera;
+        }
+
+        private void OnDisable()
+        {
+            Camera.onPreCull -= MikuPlayerReplacerPlugin.ProtectFirstPersonCamera;
+        }
+
         private void LateUpdate()
         {
             MikuPlayerReplacerPlugin.PumpLate();

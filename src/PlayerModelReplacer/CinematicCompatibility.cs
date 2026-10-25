@@ -28,17 +28,22 @@ namespace MikuPlayerReplacer
             _viewApplied = 0;
         }
 
-        private void ApplyCinematicHeadLook()
+        private void ApplyFirstPersonHeadLook()
         {
-            if (!CinematicActive() || _headBone == null || _container == null)
+            if (_headBone == null || _container == null)
                 return;
+            bool cinematic = CinematicActive();
+            // Third-person look is handled separately. First person must also
+            // follow the camera while idle and while holding an item.
+            float weight = cinematic || _viewApplied == 0 ? 1f : 1f - _viewBlend;
+            if (weight <= 0.0001f) return;
             Camera cam = Camera.main;
             Transform parent = _container.parent;
             if (cam == null || parent == null) return;
-            ReleaseCinematicView(cam);
+            if (cinematic) ReleaseCinematicView(cam);
             // An external shot owns its own framing; it must not turn the
             // character to match a camera metres away from the source skull.
-            if ((cam.transform.position - _headBone.position).sqrMagnitude > 0.64f) return;
+            if (cinematic && (cam.transform.position - _headBone.position).sqrMagnitude > 0.64f) return;
             if (_cinematicHeadRig != _headBone)
             {
                 _cinematicHeadRig = null;
@@ -54,8 +59,20 @@ namespace MikuPlayerReplacer
             // Some sequences animate the camera only, leaving the source skull
             // upright. Replace its look in mesh space, including roll; adding
             // the camera delta to the animated head would double the tilt.
-            _headBone.rotation = _container.rotation * Quaternion.Inverse(parent.rotation)
+            Quaternion target = _container.rotation * Quaternion.Inverse(parent.rotation)
                 * cam.transform.rotation * _cinematicHeadRest;
+            _headBone.rotation = Quaternion.Slerp(_headBone.rotation, target, weight);
+        }
+
+        // Camera animations can finish after LateUpdate. Check visibility again
+        // immediately before the main camera culls; preview cameras are excluded.
+        internal static void ProtectFirstPersonCamera(Camera camera)
+        {
+            MikuPlayerReplacerPlugin p = _instanceBox as MikuPlayerReplacerPlugin;
+            if (ReferenceEquals(p, null) || camera == null || camera != Camera.main
+                || !p.MasterEnabled || p._container == null || !p._built
+                || !p._container.gameObject.activeInHierarchy) return;
+            p.UpdateFirstPersonVisibility();
         }
 
         private bool CameraTouchesTorso(Camera cam, float pad)
@@ -92,7 +109,8 @@ namespace MikuPlayerReplacer
             bool first = cinematic || _viewApplied == 0 || _viewBlend <= 0.1f;
             bool hide = false;
             float pad = 0f;
-            if (cam != null && first && _hideHead.Value && _headRenderer != null && _headBone != null)
+            if (cam != null && first && (_hideHead.Value || cinematic)
+                && _headRenderer != null && _headBone != null)
             {
                 // Include the near-plane corners, not just the camera's centre.
                 pad = cam.nearClipPlane * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad)
@@ -101,13 +119,17 @@ namespace MikuPlayerReplacer
                 bounds.Expand(pad * 2f);
                 hide = (cam.transform.position - _headBone.position).sqrMagnitude
                     < Mathf.Pow(_headHideDistance.Value + pad, 2f)
-                    || bounds.Contains(cam.transform.position);
+                    || bounds.Contains(cam.transform.position)
+                    || bounds.Contains(cam.transform.position + cam.transform.forward * cam.nearClipPlane);
             }
             SetHeadHidden(hide);
-            // During a close scripted look, tail cards can sweep through the
-            // camera even when normal gameplay allows first-person tails.
-            if (cinematic && hide && _hairRenderer != null)
-                _hairRenderer.shadowCastingMode = ShadowCastingMode.ShadowsOnly;
+            // Keep the visible tails and their simulation during scripted looks.
+            // Interior protection belongs to the skull renderer, not the hair.
+            if (cinematic && _hairRenderer != null)
+            {
+                _hairRenderer.enabled = true;
+                _hairRenderer.shadowCastingMode = ShadowCastingMode.On;
+            }
 
             bool hideBody = cam != null && first && cinematic && _hideHead.Value
                 && CameraTouchesTorso(cam, pad);
