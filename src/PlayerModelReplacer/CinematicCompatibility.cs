@@ -10,6 +10,80 @@ namespace MikuPlayerReplacer
         private Quaternion _cinematicHeadRest;
         private bool _cinematicBodyHidden;
         private ShadowCastingMode _cinematicBodyShadow;
+        private SkinnedMeshRenderer _neckInterior;
+        private readonly System.Collections.Generic.List<Material> _neckInteriorMaterials =
+            new System.Collections.Generic.List<Material>();
+
+        private void ReleaseNeckInterior()
+        {
+            _neckInterior = null;
+            foreach (Material material in _neckInteriorMaterials)
+                if (material != null) Destroy(material);
+            _neckInteriorMaterials.Clear();
+        }
+
+        private void BuildNeckInterior()
+        {
+            if (_bodyRenderer == null || _headRenderer == null || _neckBone == null || _headBone == null)
+                return;
+            MeshData body = null, head = null;
+            foreach (MeshData md in _data.Meshes)
+            {
+                if (md.Role == MeshData.RoleBody && body == null) body = md;
+                if (md.Role == MeshData.RoleHead && head == null) head = md;
+            }
+            if (body == null || head == null) return;
+            Transform space = _bodyRenderer.transform;
+            MeshData cap = NeckCapGeometry.Build(body, head,
+                space.InverseTransformPoint(_neckBone.position), space.InverseTransformPoint(_headBone.position));
+            if (cap == null)
+            {
+                Logger.LogInfo("Neck interior: no closed head/body seam found; no synthetic surface added.");
+                return;
+            }
+            Shader shader = Shader.Find("Standard");
+            if (shader == null) return;
+            GameObject go = new GameObject("Miku_NeckInterior");
+            go.layer = space.gameObject.layer;
+            go.transform.SetParent(space, false);
+            Mesh mesh = new Mesh();
+            mesh.name = cap.Name;
+            mesh.vertices = cap.Vertices;
+            mesh.uv = cap.Uvs;
+            mesh.boneWeights = cap.Weights;
+            mesh.bindposes = _bodyRenderer.sharedMesh.bindposes;
+            mesh.subMeshCount = cap.Indices.Length;
+            Material[] materials = new Material[cap.Indices.Length];
+            for (int i = 0; i < materials.Length; i++)
+            {
+                mesh.SetTriangles(cap.Indices[i], i);
+                Material source = _materials[cap.SubMeshMaterials[i]];
+                Material material = new Material(shader);
+                material.name = "Miku_NeckInterior_" + i;
+                material.mainTexture = source.mainTexture;
+                material.mainTextureScale = source.mainTextureScale;
+                material.mainTextureOffset = source.mainTextureOffset;
+                material.color = source.HasProperty("_Color") ? source.color : Color.white;
+                material.SetFloat("_Glossiness", 0f);
+                material.SetFloat("_SpecularHighlights", 0f);
+                // A dedicated opaque material: do not alter the model's alpha
+                // textures or let atlas transparency reopen the neck cap.
+                _neckInteriorMaterials.Add(material);
+                materials[i] = material;
+            }
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            _neckInterior = go.AddComponent<SkinnedMeshRenderer>();
+            _neckInterior.sharedMesh = mesh;
+            _neckInterior.bones = _bodyRenderer.bones;
+            _neckInterior.rootBone = _bodyRenderer.rootBone;
+            _neckInterior.sharedMaterials = materials;
+            _neckInterior.updateWhenOffscreen = true;
+            _neckInterior.shadowCastingMode = ShadowCastingMode.Off;
+            _neckInterior.enabled = false;
+            Logger.LogInfo("Neck interior: " + cap.Vertices.Length + " seam vertices, "
+                + cap.Indices.Length + " closed rings.");
+        }
 
         // Release only transforms we still own. A scripted camera may already
         // have written a fresh position/rotation before our final late pass.
@@ -133,6 +207,8 @@ namespace MikuPlayerReplacer
 
             bool hideBody = cam != null && first && cinematic && _hideHead.Value
                 && CameraTouchesTorso(cam, pad);
+            if (_neckInterior != null)
+                _neckInterior.enabled = first && hide && !hideBody;
             if (_bodyRenderer == null) { _cinematicBodyHidden = false; return; }
             if (hideBody && !_cinematicBodyHidden)
             {

@@ -177,7 +177,7 @@ namespace MikuPlayerReplacer
         public const string PluginGuid = "com.miku.subnautica.playerreplacer";
         // MMS = MikuMikuSwim: the mod's short name, also the PDA tab label.
         public const string PluginName = "MMS";
-        public const string PluginVersion = "0.1.13";
+        public const string PluginVersion = "0.1.14";
 
         // ---- configuration ----
         private ConfigEntry<float> _scale;
@@ -4184,6 +4184,7 @@ namespace MikuPlayerReplacer
         /// </summary>
         private void ReleaseModelAssets()
         {
+            ReleaseNeckInterior();
             // A preview of the worn model holds the very materials and textures that
             // are about to be destroyed; drop it first so nothing dangles.
             if (_previewSharedAssets)
@@ -5264,6 +5265,7 @@ namespace MikuPlayerReplacer
         // every texture again.
         private void TearDownContainer()
         {
+            ReleaseNeckInterior();
             if (_container != null)
             {
                 SkinnedMeshRenderer[] smrs =
@@ -9587,6 +9589,8 @@ namespace MikuPlayerReplacer
                 Logger.LogWarning("Could not build cloth collision geometry: " + e.Message);
             }
 
+            try { BuildNeckInterior(); }
+            catch (Exception e) { Logger.LogWarning("Could not seal neck interior: " + e.Message); }
             _errorLogged = false;
         }
 
