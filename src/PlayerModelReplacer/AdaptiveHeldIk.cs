@@ -25,6 +25,7 @@ namespace MikuPlayerReplacer
             public Quaternion AimCorrection = Quaternion.identity;
             public bool TwistSupport;
             public float DistributedTwist;
+            public float RemovedUpperRoll;
             public Vector3 ElbowPoleLocal;
             public bool ElbowPoleValid;
             public float NextLog;
@@ -424,6 +425,11 @@ namespace MikuPlayerReplacer
                     OrientAdaptiveSupport(mid, hand, desired, armRest.WristLocal);
                 else hand.rotation = desired;
             }
+            // A direction-only solve leaves axial roll unconstrained. Repeated
+            // shortest-arc swings can rotate the outside of the upper arm inward
+            // even when its shoulder/elbow/wrist points are all correct.
+            state.RemovedUpperRoll = normalizeRoot
+                ? StabilizeAdaptiveUpperFrame(upper, mid, hand, armRest) : 0f;
             state.ClavCorrection = clav != null ? Quaternion.Inverse(cq) * clav.localRotation : Quaternion.identity;
             state.AimCorrection = aimBone != null ? Quaternion.Inverse(aq) * aimBone.localRotation : Quaternion.identity;
             state.UpperCorrection = Quaternion.Inverse(uq) * upper.localRotation;
@@ -434,7 +440,7 @@ namespace MikuPlayerReplacer
             upper.localRotation = uq * Quaternion.Slerp(Quaternion.identity, state.UpperCorrection, state.Weight);
             mid.localRotation = mq * Quaternion.Slerp(Quaternion.identity, state.MidCorrection, state.Weight);
             hand.localRotation = hq * Quaternion.Slerp(Quaternion.identity, state.HandCorrection, state.Weight);
-            state.TwistSupport = rifle;
+            state.TwistSupport = normalizeRoot;
             state.DistributedTwist = state.TwistSupport
                 ? DistributeAdaptiveTwist(upper, mid, hand, armRest, state.Weight) : 0f;
             if (_holdIkLog.Value && Time.unscaledTime >= state.NextLog)
@@ -444,14 +450,38 @@ namespace MikuPlayerReplacer
                 Vector3 actualPole = Vector3.ProjectOnPlane(mid.position - upper.position, hand.position - upper.position).normalized;
                 float elbowSafe = Vector3.Dot(actualPole,
                     AnatomicalElbowPole(side, (hand.position - upper.position).normalized, _adaptiveTorsoFrame));
-                Logger.LogInfo(string.Format("AdaptiveIK {0} item={1} weight={2:F2} error={3:F4} reach={4:F4}/{5:F4} angle={6:F1} elbow={7:F1} wrist={8:F1} naturalRoot={9} target={10} twist={11:F1} elbowSafe={12:F3}",
+                Logger.LogInfo(string.Format("AdaptiveIK {0} item={1} weight={2:F2} error={3:F4} reach={4:F4}/{5:F4} angle={6:F1} elbow={7:F1} wrist={8:F1} naturalRoot={9} target={10} twist={11:F1} elbowSafe={12:F3} upperRollRemoved={13:F1}",
                     suffix, _adaptiveItem.name, state.Weight, error,
                     Vector3.Distance(upper.position, target), a + b,
                     Quaternion.Angle(hand.rotation * state.ModelFrame, live.rotation * state.SourceFrame),
                     Vector3.Angle(upper.position - mid.position, hand.position - mid.position),
                     Quaternion.Angle(state.WristRest, hand.localRotation), normalizeRoot,
-                    supportTarget != null ? supportTarget.name : "vanilla-hand", state.DistributedTwist, elbowSafe));
+                    supportTarget != null ? supportTarget.name : "vanilla-hand", state.DistributedTwist, elbowSafe,
+                    state.RemovedUpperRoll));
             }
+        }
+
+        private float StabilizeAdaptiveUpperFrame(Transform upper, Transform elbow,
+            Transform hand, ArmRest rest)
+        {
+            if (rest == null || upper.parent == null || _container == null) return 0f;
+            Vector3 direction = elbow.position - upper.position;
+            if (direction.sqrMagnitude < 1e-8f) return 0f;
+            Quaternion basis = _container.rotation;
+            Quaternion parentDelta = upper.parent.rotation * Quaternion.Inverse(basis * rest.ParentLocal);
+            Quaternion reference = parentDelta * basis * rest.UpperLocal;
+            Vector3 referenceDirection = parentDelta * basis * rest.UpperDir;
+            Quaternion neutral = Quaternion.FromToRotation(referenceDirection, direction) * reference;
+            float removed = SignedTwist(upper.rotation * Quaternion.Inverse(neutral), direction);
+            Quaternion elbowWorld = elbow.rotation;
+            Quaternion handWorld = hand.rotation;
+            // Rebuild from a stable bind reference every frame. Both rotations
+            // aim the same long axis, so this only changes upper-arm roll and
+            // keeps the elbow endpoint fixed. Preserve downstream solved frames.
+            upper.rotation = neutral;
+            elbow.rotation = elbowWorld;
+            hand.rotation = handWorld;
+            return removed;
         }
 
         private static Vector3 AnatomicalElbowPole(int side, Vector3 direction, Quaternion torso)

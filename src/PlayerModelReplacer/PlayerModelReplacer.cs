@@ -176,7 +176,7 @@ namespace MikuPlayerReplacer
         public const string PluginGuid = "com.miku.subnautica.playerreplacer";
         // MMS = MikuMikuSwim: the mod's short name, also the PDA tab label.
         public const string PluginName = "MMS";
-        public const string PluginVersion = "0.1.7";
+        public const string PluginVersion = "0.1.8";
 
         // ---- configuration ----
         private ConfigEntry<float> _scale;
