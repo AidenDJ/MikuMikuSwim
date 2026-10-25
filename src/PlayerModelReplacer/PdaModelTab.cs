@@ -120,6 +120,7 @@ namespace MikuPlayerReplacer
 
         /// <summary>File shipped next to the DLL; the PDA tab shows it as the logo.</summary>
         internal const string LogoFileName = "MMS_logo.png";
+        internal const string PdaIconFileName = "MMS_pda_icon.png";
 
         private static void BuildTabIcon()
         {
@@ -128,7 +129,7 @@ namespace MikuPlayerReplacer
             _iconTex = null;
             try
             {
-                if (!BuildLogoIcon(Size))
+                if (!LoadPdaIcon() && !BuildLogoIcon(Size))
                 {
                     BuildSilhouetteIcon(Size);
                 }
@@ -144,9 +145,27 @@ namespace MikuPlayerReplacer
                 }
                 BuildSilhouetteIcon(Size);
             }
-            _tabIcon = Sprite.Create(_iconTex, new Rect(0f, 0f, Size, Size),
+            _tabIcon = Sprite.Create(_iconTex, new Rect(0f, 0f, _iconTex.width, _iconTex.height),
                 new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.FullRect);
             _tabIcon.hideFlags = HideFlags.HideAndDontSave;
+        }
+
+        private static bool LoadPdaIcon()
+        {
+            string dir = Path.GetDirectoryName(typeof(MikuPlayerReplacerPlugin).Assembly.Location);
+            string path = Path.Combine(dir ?? "", PdaIconFileName);
+            if (!File.Exists(path)) return false;
+            Texture2D texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+            if (!texture.LoadImage(File.ReadAllBytes(path), true))
+            {
+                UnityEngine.Object.Destroy(texture);
+                return false;
+            }
+            texture.hideFlags = HideFlags.HideAndDontSave;
+            texture.filterMode = FilterMode.Bilinear;
+            texture.wrapMode = TextureWrapMode.Clamp;
+            _iconTex = texture;
+            return true;
         }
 
         /// <summary>
@@ -409,7 +428,19 @@ namespace MikuPlayerReplacer
         private Text _valHeadLook;
         private Text _valIdleDelay;
         private Text _valPoseTransition;
-        private readonly List<GameObject> _materialRows = new List<GameObject>();
+        private sealed class MaterialRowView
+        {
+            internal GameObject Root;
+            internal string Material;
+            internal Text Label;
+            internal Toggle Hide, Glow;
+            internal Image HideCheck, GlowCheck;
+        }
+        private readonly List<MaterialRowView> _materialRows = new List<MaterialRowView>();
+        private readonly List<Button> _modelButtons = new List<Button>();
+        private readonly List<Text> _modelLabels = new List<Text>();
+        private string _materialListKey;
+        private float _nextPreviewRender;
 
         private readonly List<MaterialPart> _parts = new List<MaterialPart>();
         private int _lastGeneration = -1;
@@ -814,6 +845,11 @@ namespace MikuPlayerReplacer
             {
                 return;
             }
+            // Coalesce input into one draw. Keep the pending state until it is
+            // drawn, so the final mouse/slider movement cannot be dropped.
+            if (Time.unscaledTime < _nextPreviewRender) return;
+            _nextPreviewRender = Mathf.Max(_nextPreviewRender + 1f / 45f,
+                Time.unscaledTime + 0.001f);
             _previewDirty = false;
             _lastRenderPreviewGen = p.PreviewGeneration;
             _lastRenderYaw = _orbitYaw;
@@ -944,7 +980,9 @@ namespace MikuPlayerReplacer
         private void CreateRenderTexture()
         {
             float aspect = PreviewAspect;
-            const int height = 720;
+            int height = _previewImage != null
+                ? Mathf.Clamp(Mathf.CeilToInt(_previewImage.rectTransform.rect.height), 320, 640)
+                : 512;
             int width = Mathf.Clamp(Mathf.RoundToInt(height * aspect), 320, 2048);
             RenderTexture rt = new RenderTexture(width, height, 24,
                 RenderTextureFormat.ARGB32);
@@ -1635,7 +1673,6 @@ namespace MikuPlayerReplacer
             {
                 return;
             }
-            ClearChildren(_modelContent);
             MikuPlayerReplacerPlugin p = Plugin;
             if (ReferenceEquals(p, null))
             {
@@ -1643,6 +1680,10 @@ namespace MikuPlayerReplacer
             }
             if (p.ModelCount == 0)
             {
+                if (_modelButtons.Count == 0 && _modelContent.childCount > 0) return;
+                ClearChildren(_modelContent);
+                _modelButtons.Clear();
+                _modelLabels.Clear();
                 // The mod no longer ships a model, so an empty list is a normal
                 // first-run state and has to say what to do about it.
                 Text empty = NewText(_modelContent,
@@ -1654,9 +1695,24 @@ namespace MikuPlayerReplacer
                 emptyLayout.minHeight = 96f;
                 return;
             }
+            if (_modelButtons.Count != p.ModelCount)
+            {
+                ClearChildren(_modelContent);
+                _modelButtons.Clear();
+                _modelLabels.Clear();
+                for (int i = 0; i < p.ModelCount; i++)
+                {
+                    int index = i;
+                    Button b = NewButton(_modelContent, "", RowColor, 16);
+                    LayoutElement le = b.gameObject.AddComponent<LayoutElement>();
+                    le.preferredHeight = le.minHeight = 34f;
+                    b.onClick.AddListener(delegate { OnModelClicked(index); });
+                    _modelButtons.Add(b);
+                    _modelLabels.Add(b.GetComponentInChildren<Text>());
+                }
+            }
             for (int i = 0; i < p.ModelCount; i++)
             {
-                int index = i;
                 bool worn = p.IsActiveModel(i);
                 bool highlighted = p.PreviewModelIndex == i;
                 string label = (highlighted ? "● " : "○ ") + p.ModelLabelAt(i);
@@ -1664,12 +1720,8 @@ namespace MikuPlayerReplacer
                 {
                     label += "（已穿戴）";
                 }
-                Button b = NewButton(_modelContent, label,
-                    highlighted ? RowActiveColor : RowColor, 16);
-                LayoutElement le = b.gameObject.AddComponent<LayoutElement>();
-                le.preferredHeight = 34f;
-                le.minHeight = 34f;
-                b.onClick.AddListener(delegate { OnModelClicked(index); });
+                _modelLabels[i].text = label;
+                _modelButtons[i].targetGraphic.color = highlighted ? RowActiveColor : RowColor;
             }
         }
 
@@ -1709,8 +1761,6 @@ namespace MikuPlayerReplacer
             {
                 return;
             }
-            ClearChildren(_materialContent);
-            _materialRows.Clear();
             _parts.Clear();
             MikuPlayerReplacerPlugin p = Plugin;
             if (ReferenceEquals(p, null))
@@ -1718,6 +1768,19 @@ namespace MikuPlayerReplacer
                 return;
             }
             p.CollectParts(_parts);
+            // Opening the page and preview completion often report the same
+            // parts. Preserve their controls, scroll position and layout.
+            System.Text.StringBuilder key = new System.Text.StringBuilder();
+            key.Append(p.BuildGeneration).Append('/').Append(p.PreviewGeneration);
+            for (int i = 0; i < _parts.Count; i++)
+            {
+                MaterialPart part = _parts[i];
+                key.Append('\n').Append(part.Name).Append('\t').Append(part.Texture)
+                    .Append(p.IsPartHidden(part.Name)).Append(p.IsPartGlowing(part.Name));
+            }
+            string nextKey = key.ToString();
+            if (_materialListKey == nextKey) return;
+            _materialListKey = nextKey;
             for (int i = 0; i < _parts.Count; i++)
             {
                 MaterialPart part = _parts[i];
@@ -1726,36 +1789,52 @@ namespace MikuPlayerReplacer
                 {
                     label += "  (" + part.Texture + ")";
                 }
-                NewMaterialRow(label, part.Name, p);
+                if (i == _materialRows.Count) NewMaterialRow();
+                MaterialRowView row = _materialRows[i];
+                row.Material = part.Name;
+                row.Label.text = label;
+                bool hidden = p.IsPartHidden(part.Name);
+                bool glow = p.IsPartGlowing(part.Name);
+                row.Hide.SetIsOnWithoutNotify(hidden);
+                row.Glow.SetIsOnWithoutNotify(glow);
+                row.HideCheck.enabled = hidden;
+                row.GlowCheck.enabled = glow;
+                if (!row.Root.activeSelf) row.Root.SetActive(true);
             }
+            for (int i = _parts.Count; i < _materialRows.Count; i++)
+                if (_materialRows[i].Root.activeSelf) _materialRows[i].Root.SetActive(false);
         }
 
         /// <summary>One material line: the checkbox on the left hides the part,
         /// the "发光" checkbox on the right makes it glow like the built-in
         /// model's highlights. Both are stored per model.</summary>
-        private void NewMaterialRow(string label, string materialName, MikuPlayerReplacerPlugin p)
+        private void NewMaterialRow()
         {
             RectTransform row = NewRect("MaterialRow", _materialContent);
+            MaterialRowView view = new MaterialRowView();
+            view.Root = row.gameObject;
             LayoutElement le = row.gameObject.AddComponent<LayoutElement>();
             le.preferredHeight = 26f;
             le.minHeight = 26f;
-            _materialRows.Add(row.gameObject);
+            _materialRows.Add(view);
 
             RectTransform hideRt = NewRect("Hide", row);
             Stretch(hideRt, 0f, 0f, 78f, 0f);
             // Long material names stop at the glow cell instead of running
             // underneath it.
-            hideRt.gameObject.AddComponent<RectMask2D>();
-            BuildToggleParts(hideRt, label, p.IsPartHidden(materialName),
+            view.Hide = BuildToggleParts(hideRt, "", false,
                 delegate(bool hidden)
                 {
                     MikuPlayerReplacerPlugin plugin = Plugin;
                     if (!ReferenceEquals(plugin, null))
                     {
-                        plugin.SetPartHidden(materialName, hidden);
+                        plugin.SetPartHidden(view.Material, hidden);
                     }
                     _previewDirty = true;
                 }, 15);
+            view.Label = hideRt.GetComponentInChildren<Text>();
+            view.Label.horizontalOverflow = HorizontalWrapMode.Wrap;
+            view.HideCheck = hideRt.Find("Box/Check").GetComponent<Image>();
 
             RectTransform glowRt = NewRect("Glow", row);
             glowRt.anchorMin = new Vector2(1f, 0f);
@@ -1763,16 +1842,17 @@ namespace MikuPlayerReplacer
             glowRt.pivot = new Vector2(1f, 0.5f);
             glowRt.sizeDelta = new Vector2(74f, 0f);
             glowRt.anchoredPosition = Vector2.zero;
-            BuildToggleParts(glowRt, "发光", p.IsPartGlowing(materialName),
+            view.Glow = BuildToggleParts(glowRt, "发光", false,
                 delegate(bool glow)
                 {
                     MikuPlayerReplacerPlugin plugin = Plugin;
                     if (!ReferenceEquals(plugin, null))
                     {
-                        plugin.SetPartGlow(materialName, glow);
+                        plugin.SetPartGlow(view.Material, glow);
                     }
                     _previewDirty = true;
                 }, 15);
+            view.GlowCheck = glowRt.Find("Box/Check").GetComponent<Image>();
         }
 
         private void OnShowAllClicked()

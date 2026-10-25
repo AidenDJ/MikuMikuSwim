@@ -177,7 +177,7 @@ namespace MikuPlayerReplacer
         public const string PluginGuid = "com.miku.subnautica.playerreplacer";
         // MMS = MikuMikuSwim: the mod's short name, also the PDA tab label.
         public const string PluginName = "MMS";
-        public const string PluginVersion = "0.1.11";
+        public const string PluginVersion = "0.1.12";
 
         // ---- configuration ----
         private ConfigEntry<float> _scale;
@@ -734,6 +734,7 @@ namespace MikuPlayerReplacer
             public Quaternion Swing = Quaternion.identity;
             public float MaxSwing;
             public Vector3 LastRoot;
+            public Quaternion LastRootRotation;
             public bool HasLastRoot;
             // Orientation the authored rest curl is expressed in. It is the head's
             // rotation with a short lag, so the tail's shape follows the body without
@@ -6234,7 +6235,7 @@ namespace MikuPlayerReplacer
                     GL.Clear(true, true, Color.clear);
                 }
                 cam.Render();
-                ProbePreviewTarget(cam, rt);
+                if (_verbose.Value) ProbePreviewTarget(cam, rt);
             }
             catch (Exception e)
             {
@@ -9548,6 +9549,8 @@ namespace MikuPlayerReplacer
             }
 
             _headSourceBone = sources.Head != null ? sources.Head.Bone : null;
+            _cinematicHeadRig = null;
+            _cinematicBodyHidden = false;
 
             _gameBodyRenderers.Clear();
             _gameBodyRenderers.AddRange(sources.GameBodyRenderers);
@@ -12421,6 +12424,7 @@ namespace MikuPlayerReplacer
             dt = Mathf.Clamp(dt, 0.001f, 0.05f);
             float t = Time.time;
             bool hairOn = _hairPhysics == null || _hairPhysics.Value;
+            bool cinematic = CinematicActive();
             bool skirtOn = _skirtPhysics == null || _skirtPhysics.Value;
             bool clothesOn = _clothesPhysics == null || _clothesPhysics.Value;
             bool accessoryOn = _accessoryPhysics == null || _accessoryPhysics.Value;
@@ -12474,7 +12478,23 @@ namespace MikuPlayerReplacer
                 // centimetres per frame, but has to keep simulating, not reset.
                 Vector3 rootNow = ch.Root.position;
                 bool snapped = !ch.HasLastRoot || (rootNow - ch.LastRoot).sqrMagnitude > 1f;
+                if (!snapped && cinematic && ch.Hair)
+                {
+                    // Scripted head roll is attachment motion, not a water
+                    // impulse. Carry both Verlet states through the same rigid
+                    // transform so the hair follows without injected velocity.
+                    Quaternion turn = ch.Root.rotation * Quaternion.Inverse(ch.LastRootRotation);
+                    for (int i = 0; i < joints; i++)
+                    {
+                        ch.Points[i] = rootNow + turn * (ch.Points[i] - ch.LastRoot);
+                        ch.Prev[i] = rootNow + turn * (ch.Prev[i] - ch.LastRoot);
+                        ch.Vel[i] = turn * ch.Vel[i];
+                    }
+                    ch.SheetFrame = turn * ch.SheetFrame;
+                    ch.Swing = turn * ch.Swing * Quaternion.Inverse(turn);
+                }
                 ch.LastRoot = rootNow;
+                ch.LastRootRotation = ch.Root.rotation;
                 ch.HasLastRoot = true;
                 if (snapped)
                 {
@@ -15608,6 +15628,7 @@ namespace MikuPlayerReplacer
                 // on the camera rig only). Add the glance on top of the retargeted
                 // pose, after the head alignment so the body is not shifted.
                 ApplyHeadLook();
+                ApplyCinematicHeadLook();
 
                 // Where the retargeted hand sits relative to the game hand; only a
                 // diagnostic now that Model mode does not bend the arm at all.
@@ -15975,22 +15996,7 @@ namespace MikuPlayerReplacer
                 // view offset is in effect. During the blend into or out of first
                 // person the camera still passes through the head, so the test keeps
                 // running while the offset is small.
-                if (_hideHead.Value && _headRenderer != null && _headBone != null)
-                {
-                    Camera cam = Camera.main;
-                    bool thirdPersonView = _viewApplied != 0 && _viewBlend > 0.1f;
-                    if (cam == null || thirdPersonView)
-                    {
-                        SetHeadHidden(false);
-                    }
-                    else
-                    {
-                        Vector3 camPos = cam.transform.position;
-                        bool hide = Vector3.Distance(camPos, _headBone.position) < _headHideDistance.Value
-                                    || _headRenderer.bounds.Contains(camPos);
-                        SetHeadHidden(hide);
-                    }
-                }
+                if (_latePass) UpdateFirstPersonVisibility();
             }
             catch (Exception e)
             {
@@ -16068,6 +16074,7 @@ namespace MikuPlayerReplacer
                 return null;
             }
             Transform camT = cam.transform;
+
             if (_viewProbe == null)
             {
                 GameObject go = new GameObject("Miku_ViewProbe");
@@ -16714,6 +16721,12 @@ namespace MikuPlayerReplacer
             }
             Transform camT = cam.transform;
 
+            if (CinematicActive())
+            {
+                ReleaseCinematicView(cam);
+                return;
+            }
+
             // While the camera is untouched, keep the game's own local transform. Every
             // offset is measured from it, and it must be recent: the game animates the
             // camera position and look direction every frame.
@@ -16856,6 +16869,8 @@ namespace MikuPlayerReplacer
                 }
                 _camAppliedLocalRot = camT.localRotation;
             }
+            _camAppliedLocalPos = camT.localPosition;
+            _camAppliedLocalRot = camT.localRotation;
             _camMoved = true;
             _camMovedT = camT;
         }

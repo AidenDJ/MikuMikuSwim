@@ -4,7 +4,7 @@
 不是简单挂在相机上：插件在运行时读取游戏主角的 64 根骨骼，把 **55 根骨骼（含双腿、双臂和全部手指）**
 的旋转实时重定向到模型上，所以游泳、走路、手臂动作、手指动作都会跟着走。
 
-- 版本：0.1.11
+- 版本：0.1.12
 - 游戏版本：Steam 1.22.83031（Unity 2019.4.36 / Mono / 64 位）
 - 插件：BepInEx 5.4.23.5，`PlayerModelReplacer.dll`（游戏日志里显示为 **MMS**）
 - 模型：**不内置**。自己把 PMX 模型和贴图放进 `BepInEx\plugins\PlayerModelReplacer\Models\`
@@ -23,6 +23,8 @@
 
 0.1.11 修正模型切换时的源网格排除与着色器选择：本模组的头发网格不再参与源骨架扫描；只有 MarmosetUBER 使用游戏材质初始化，其他情况使用 Standard 对应的透明/裁剪设置。拿鱼等普通物品时肩根保持躯干绑定参考，双手与普通持物的前臂朝向按握持坐标求解；辅助骨扭转跨越正负 180° 时保持角度分支连续。构建和角度分支检查通过，具体透明贴图和游泳蒙皮效果仍需游戏内验证。
 
+0.1.12 增加参考原版 PDA 图集生成的双马尾图标，复用模型与材质列表控件、合并预览绘制、减少同步调试读回。过场期间避让原版镜头、补齐摄像机歪头的头部与头发跟随，并对近裁剪面穿入模型增加隐藏保护。构建与离线坐标检查通过，实际帧耗时和过场外观待游戏内验证。详见 [PDA 与过场兼容性记录](docs/pda-cinematics-0.1.12.md)。
+
 需要先安装 **BepInEx 5.4.x（x64 / Unity Mono 版）**，并确认游戏能正常生成
 `BepInEx\LogOutput.log`。本包只包含插件本体，不含 BepInEx。
 
@@ -36,6 +38,7 @@
    ```
    Subnautica\BepInEx\plugins\PlayerModelReplacer\PlayerModelReplacer.dll
    Subnautica\BepInEx\plugins\PlayerModelReplacer\MMS_logo.png
+   Subnautica\BepInEx\plugins\PlayerModelReplacer\MMS_pda_icon.png
    Subnautica\BepInEx\plugins\PlayerModelReplacer\Models\README.txt
    ```
 
