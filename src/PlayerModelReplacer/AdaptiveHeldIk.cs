@@ -11,6 +11,7 @@ namespace MikuPlayerReplacer
         {
             public Transform Hand;
             public Transform Upper, Mid, Clav, Aim, Source, SourceUpper, SourceMid;
+            public Quaternion ClavBindLocal, AimBindLocal;
             public Vector3 ModelPoint, SourcePoint;
             public Quaternion ModelFrame, SourceFrame;
             public Quaternion GripRotationOffset;
@@ -36,6 +37,7 @@ namespace MikuPlayerReplacer
         private Transform _adaptiveItem;
         private PlayerTool _adaptiveTool;
         private bool _adaptiveRifle;
+        private bool _adaptiveEquipBodyBlend;
         private Transform _adaptiveTorsoNeck, _adaptiveTorsoHips;
         private Quaternion _adaptiveTorsoFrame = Quaternion.identity;
 
@@ -92,6 +94,8 @@ namespace MikuPlayerReplacer
             state.Mid = AdaptiveModelBone(bones, indices, "elbow_" + suffix);
             state.Clav = AdaptiveModelBone(bones, indices, "clav_" + suffix);
             state.Aim = AdaptiveModelBone(bones, indices, "clav_C_" + suffix);
+            state.ClavBindLocal = state.Clav != null ? state.Clav.localRotation : Quaternion.identity;
+            state.AimBindLocal = state.Aim != null ? state.Aim.localRotation : Quaternion.identity;
             SourceBone sourceBone;
             if (sources.Bones.TryGetValue("shoulder_" + suffix, out sourceBone)) state.SourceUpper = sourceBone.Bone;
             if (sources.Bones.TryGetValue("elbow_" + suffix, out sourceBone)) state.SourceMid = sourceBone.Bone;
@@ -174,10 +178,16 @@ namespace MikuPlayerReplacer
                 foreach (float turn in new[] { -179f, -120f, -61f, -30f, 0f, 30f, 61f, 179f })
                 {
                     Vector3 candidate = Quaternion.AngleAxis(turn, rotation * target.normalized) * rotated;
-                    Vector3 constrained = ConstrainElbowPole(candidate, rotated, rotation * target.normalized);
+                    Vector3 constrained = ConstrainBodyElbowPole(side, candidate, rotation * target.normalized, rotation);
                     if (!AdaptiveFinite(constrained) || Vector3.Dot(constrained, rotated) < .49f
                         || Mathf.Abs(Vector3.Dot(constrained, rotation * target.normalized)) > .001f)
                         throw new InvalidOperationException("AdaptiveIK inverted elbow constraint failed");
+                    if (Mathf.Abs(Vector3.Dot(target.normalized, Vector3.up)) > .65f)
+                    {
+                        Vector3 ventral = Vector3.ProjectOnPlane(rotation * Vector3.forward, rotation * target.normalized);
+                        if (Vector3.Dot(constrained, ventral) < -.001f)
+                            throw new InvalidOperationException("AdaptiveIK prone elbow dorsal flip failed");
+                    }
                 }
                 poleCases++;
             }
@@ -190,6 +200,7 @@ namespace MikuPlayerReplacer
             _adaptiveFrame = Time.frameCount;
             if (!AdaptiveMode())
             {
+                _adaptiveEquipBodyBlend = false;
                 foreach (AdaptiveHand h in _adaptiveHands) if (h != null) h.Weight = 0f;
                 return;
             }
@@ -199,6 +210,8 @@ namespace MikuPlayerReplacer
                 || (player.armsController != null && player.armsController.IsBleederAttached());
             Transform item = HeldItemTransform();
             bool changed = item != _adaptiveItem;
+            if (changed) _adaptiveEquipBodyBlend = item != null;
+            if (_poseTransition <= 0f) _adaptiveEquipBodyBlend = false;
             // Cache missing PlayerTool components too (fish/ordinary items).
             // Dynamic targets and hand ownership are still read every frame.
             if (changed || (!ReferenceEquals(_adaptiveTool, null) && _adaptiveTool == null))
@@ -213,6 +226,7 @@ namespace MikuPlayerReplacer
                 || tool.useLeftAimTargetOnPlayer || tool.ikAimLeftArm);
             if (exclusive)
             {
+                _adaptiveEquipBodyBlend = false;
                 for (int side = 0; side < 2; side++)
                 {
                     AdaptiveHand state = _adaptiveHands[side];
@@ -240,22 +254,29 @@ namespace MikuPlayerReplacer
             }
             // No item-name latch: original targets may be released during reload.
             float step = Time.deltaTime / (tool != null ? Mathf.Clamp(tool.drawTime, 0.08f, 0.5f) : 0.2f);
+            float bodyWeight = _adaptiveEquipBodyBlend ? BodyPoseTransitionProgress() : 1f;
             ArmsController arms = player.armsController;
             for (int side = 0; side < 2; side++)
             {
                 AdaptiveHand state = _adaptiveHands[side];
                 if (state == null || state.Hand == null) continue;
-                if (changed) state.PoleValid = state.ElbowPoleValid = false;
+                if (changed)
+                {
+                    state.PoleValid = state.ElbowPoleValid = false;
+                    if (item != null) state.Weight = 0f;
+                }
                 bool active = item != null && (side == 1 || left);
                 state.Weight = Mathf.MoveTowards(state.Weight, active ? 1f : 0f,
                     step);
                 if (state.Weight <= 0f) continue;
-                SolveAdaptiveHand(side, state, active, arms, tool, left);
+                float solveWeight = state.Weight * (active ? bodyWeight : 1f);
+                if (solveWeight > 0.0001f)
+                    SolveAdaptiveHand(side, state, active, arms, tool, left, solveWeight);
             }
         }
 
         private void SolveAdaptiveHand(int side, AdaptiveHand state, bool active,
-            ArmsController arms, PlayerTool tool, bool twoHanded)
+            ArmsController arms, PlayerTool tool, bool twoHanded, float solveWeight)
         {
             string suffix = side == 0 ? "L" : "R";
             Transform upper = state.Upper;
@@ -288,13 +309,13 @@ namespace MikuPlayerReplacer
             if (!active)
             {
                 // Fade local corrections against THIS frame's animation, never a stale world target.
-                if (clav != null) clav.localRotation = cq * Quaternion.Slerp(Quaternion.identity, state.ClavCorrection, state.Weight);
-                if (aimBone != null) aimBone.localRotation = aq * Quaternion.Slerp(Quaternion.identity, state.AimCorrection, state.Weight);
-                upper.localRotation = uq * Quaternion.Slerp(Quaternion.identity, state.UpperCorrection, state.Weight);
-                mid.localRotation = mq * Quaternion.Slerp(Quaternion.identity, state.MidCorrection, state.Weight);
-                hand.localRotation = hq * Quaternion.Slerp(Quaternion.identity, state.HandCorrection, state.Weight);
+                if (clav != null) clav.localRotation = cq * Quaternion.Slerp(Quaternion.identity, state.ClavCorrection, solveWeight);
+                if (aimBone != null) aimBone.localRotation = aq * Quaternion.Slerp(Quaternion.identity, state.AimCorrection, solveWeight);
+                upper.localRotation = uq * Quaternion.Slerp(Quaternion.identity, state.UpperCorrection, solveWeight);
+                mid.localRotation = mq * Quaternion.Slerp(Quaternion.identity, state.MidCorrection, solveWeight);
+                hand.localRotation = hq * Quaternion.Slerp(Quaternion.identity, state.HandCorrection, solveWeight);
                 if (state.TwistSupport)
-                    state.DistributedTwist = DistributeAdaptiveTwist(upper, mid, hand, _armRest[side], state.Weight);
+                    state.DistributedTwist = DistributeAdaptiveTwist(upper, mid, hand, _armRest[side], solveWeight);
                 return;
             }
             Vector3 sourceOffset = source.TransformVector(state.SourcePoint);
@@ -364,13 +385,13 @@ namespace MikuPlayerReplacer
             // Hand-specific candidates may guide the solve but cannot bypass this constraint.
             {
                 Vector3 safe = AnatomicalElbowPole(side, direction, _adaptiveTorsoFrame);
-                pole = ConstrainElbowPole(rifle && !fixedSupport ? safe : pole, safe, direction);
+                pole = ConstrainBodyElbowPole(side, rifle && !fixedSupport ? safe : pole, direction, _adaptiveTorsoFrame);
                 if (state.ElbowPoleValid)
                 {
-                    Vector3 previous = ConstrainElbowPole(_adaptiveTorsoFrame * state.ElbowPoleLocal, safe, direction);
+                    Vector3 previous = ConstrainBodyElbowPole(side, _adaptiveTorsoFrame * state.ElbowPoleLocal, direction, _adaptiveTorsoFrame);
                     pole = Vector3.RotateTowards(previous, pole, 6f * Time.deltaTime, 0f);
                 }
-                pole = ConstrainElbowPole(pole, safe, direction);
+                pole = ConstrainBodyElbowPole(side, pole, direction, _adaptiveTorsoFrame);
                 state.ElbowPoleLocal = Quaternion.Inverse(_adaptiveTorsoFrame) * pole;
                 state.ElbowPoleValid = true;
             }
@@ -380,9 +401,7 @@ namespace MikuPlayerReplacer
             {
                 Vector3 elbow, wrist;
                 target = grip - desired * modelOffset;
-                pole = ConstrainElbowPole(pole,
-                    AnatomicalElbowPole(side, (target - upper.position).normalized, _adaptiveTorsoFrame),
-                    (target - upper.position).normalized);
+                pole = ConstrainBodyElbowPole(side, pole, (target - upper.position).normalized, _adaptiveTorsoFrame);
                 if (!AdaptiveTriangle(upper.position, target, pole, a, b, out elbow, out wrist)) return;
                 upper.rotation = Quaternion.FromToRotation(mid.position - upper.position,
                     elbow - upper.position) * upper.rotation;
@@ -412,9 +431,7 @@ namespace MikuPlayerReplacer
             // Last orientation limit changed the wrist target: close position once more.
             Vector3 finalElbow, finalWrist;
             target = grip - desired * modelOffset;
-            pole = ConstrainElbowPole(pole,
-                AnatomicalElbowPole(side, (target - upper.position).normalized, _adaptiveTorsoFrame),
-                (target - upper.position).normalized);
+            pole = ConstrainBodyElbowPole(side, pole, (target - upper.position).normalized, _adaptiveTorsoFrame);
             if (AdaptiveTriangle(upper.position, target, pole, a, b, out finalElbow, out finalWrist))
             {
                 upper.rotation = Quaternion.FromToRotation(mid.position - upper.position,
@@ -435,14 +452,14 @@ namespace MikuPlayerReplacer
             state.UpperCorrection = Quaternion.Inverse(uq) * upper.localRotation;
             state.MidCorrection = Quaternion.Inverse(mq) * mid.localRotation;
             state.HandCorrection = Quaternion.Inverse(hq) * hand.localRotation;
-            if (clav != null) clav.localRotation = cq * Quaternion.Slerp(Quaternion.identity, state.ClavCorrection, state.Weight);
-            if (aimBone != null) aimBone.localRotation = aq * Quaternion.Slerp(Quaternion.identity, state.AimCorrection, state.Weight);
-            upper.localRotation = uq * Quaternion.Slerp(Quaternion.identity, state.UpperCorrection, state.Weight);
-            mid.localRotation = mq * Quaternion.Slerp(Quaternion.identity, state.MidCorrection, state.Weight);
-            hand.localRotation = hq * Quaternion.Slerp(Quaternion.identity, state.HandCorrection, state.Weight);
+            if (clav != null) clav.localRotation = cq * Quaternion.Slerp(Quaternion.identity, state.ClavCorrection, solveWeight);
+            if (aimBone != null) aimBone.localRotation = aq * Quaternion.Slerp(Quaternion.identity, state.AimCorrection, solveWeight);
+            upper.localRotation = uq * Quaternion.Slerp(Quaternion.identity, state.UpperCorrection, solveWeight);
+            mid.localRotation = mq * Quaternion.Slerp(Quaternion.identity, state.MidCorrection, solveWeight);
+            hand.localRotation = hq * Quaternion.Slerp(Quaternion.identity, state.HandCorrection, solveWeight);
             state.TwistSupport = normalizeRoot;
             state.DistributedTwist = state.TwistSupport
-                ? DistributeAdaptiveTwist(upper, mid, hand, armRest, state.Weight) : 0f;
+                ? DistributeAdaptiveTwist(upper, mid, hand, armRest, solveWeight) : 0f;
             if (_holdIkLog.Value && Time.unscaledTime >= state.NextLog)
             {
                 state.NextLog = Time.unscaledTime + 1f;
@@ -451,7 +468,7 @@ namespace MikuPlayerReplacer
                 float elbowSafe = Vector3.Dot(actualPole,
                     AnatomicalElbowPole(side, (hand.position - upper.position).normalized, _adaptiveTorsoFrame));
                 Logger.LogInfo(string.Format("AdaptiveIK {0} item={1} weight={2:F2} error={3:F4} reach={4:F4}/{5:F4} angle={6:F1} elbow={7:F1} wrist={8:F1} naturalRoot={9} target={10} twist={11:F1} elbowSafe={12:F3} upperRollRemoved={13:F1}",
-                    suffix, _adaptiveItem.name, state.Weight, error,
+                    suffix, _adaptiveItem.name, solveWeight, error,
                     Vector3.Distance(upper.position, target), a + b,
                     Quaternion.Angle(hand.rotation * state.ModelFrame, live.rotation * state.SourceFrame),
                     Vector3.Angle(upper.position - mid.position, hand.position - mid.position),
@@ -488,10 +505,45 @@ namespace MikuPlayerReplacer
         {
             Vector3 outward = torso * (side == 0 ? Vector3.left : Vector3.right);
             Vector3 down = torso * Vector3.down;
-            Vector3 pole = Vector3.ProjectOnPlane(outward * .7f + down * .7f, direction);
+            // With arms reaching along the body toward the head (prone swim),
+            // "toward hips" projects away. Chest-front keeps the elbow on the
+            // ventral side instead of leaving its up/down choice ambiguous.
+            Vector3 front = torso * Vector3.forward;
+            Vector3 pole = Vector3.ProjectOnPlane(outward * .7f + down * .55f + front * .45f, direction);
+            if (Mathf.Abs(Vector3.Dot(direction, torso * Vector3.up)) > .65f)
+            {
+                Vector3 ventral = Vector3.ProjectOnPlane(front, direction);
+                float ventralLength = ventral.sqrMagnitude;
+                if (ventralLength > 1e-8f && Vector3.Dot(pole, ventral) < 0f)
+                {
+                    pole -= ventral * (Vector3.Dot(pole, ventral) / ventralLength);
+                    pole += ventral.normalized * .2f;
+                }
+            }
             if (pole.sqrMagnitude < 1e-6f) pole = Vector3.ProjectOnPlane(outward, direction);
             if (pole.sqrMagnitude < 1e-6f) pole = Vector3.ProjectOnPlane(down, direction);
             return pole.normalized;
+        }
+
+        private static Vector3 ConstrainBodyElbowPole(int side, Vector3 candidate,
+            Vector3 direction, Quaternion torso)
+        {
+            Vector3 safe = AnatomicalElbowPole(side, direction, torso);
+            Vector3 limited = ConstrainElbowPole(candidate, safe, direction);
+            if (Mathf.Abs(Vector3.Dot(direction, torso * Vector3.up)) > .65f)
+            {
+                Vector3 ventral = Vector3.ProjectOnPlane(torso * Vector3.forward, direction);
+                if (ventral.sqrMagnitude > 1e-8f && Vector3.Dot(limited, ventral) < 0f)
+                    return safe;
+            }
+            return limited;
+        }
+
+        private float BodyPoseTransitionProgress()
+        {
+            if (_poseTransition <= 0f) return 1f;
+            float t = Mathf.Clamp01(1f - _poseTransition / Mathf.Max(.01f, _poseTransitionLength));
+            return t * t * (3f - 2f * t);
         }
 
         private static Vector3 ConstrainElbowPole(Vector3 candidate, Vector3 safe, Vector3 direction)
@@ -588,6 +640,13 @@ namespace MikuPlayerReplacer
                         : aimReference;
                 }
             }
+            // Body pitch belongs to the torso parent, not to an unlimited
+            // local shoulder lift copied from the suit's first-person rig.
+            AdaptiveHand calibrated = _adaptiveHands[side];
+            if (clav != null)
+                clav.localRotation = Quaternion.RotateTowards(calibrated.ClavBindLocal, clav.localRotation, 25f);
+            if (aim != null)
+                aim.localRotation = Quaternion.RotateTowards(calibrated.AimBindLocal, aim.localRotation, 30f);
             Quaternion parentSwing = upper.parent.rotation * Quaternion.Inverse(basis * rest.ParentLocal);
             Quaternion upperReference = parentSwing * basis * rest.UpperLocal;
             upper.rotation = Quaternion.FromToRotation(parentSwing * basis * rest.UpperDir,

@@ -176,7 +176,7 @@ namespace MikuPlayerReplacer
         public const string PluginGuid = "com.miku.subnautica.playerreplacer";
         // MMS = MikuMikuSwim: the mod's short name, also the PDA tab label.
         public const string PluginName = "MMS";
-        public const string PluginVersion = "0.1.8";
+        public const string PluginVersion = "0.1.9";
 
         // ---- configuration ----
         private ConfigEntry<float> _scale;
@@ -15448,9 +15448,7 @@ namespace MikuPlayerReplacer
                 bool poseBlend = _poseTransition > 0f;
                 if (poseBlend)
                 {
-                    float t = Mathf.Clamp01(1f - _poseTransition
-                        / Mathf.Max(0.01f, _poseTransitionLength));
-                    poseK = t * t * (3f - 2f * t);
+                    poseK = BodyPoseTransitionProgress();
                     if (!_poseFromValid)
                     {
                         // First frame of the crossfade: remember what the model was
@@ -15470,7 +15468,9 @@ namespace MikuPlayerReplacer
                         }
                         for (int i = 0; i < _pairs.Length; i++)
                         {
-                            _poseFromRot[i] = _lastBaseValid && _lastBaseRot != null
+                            _poseFromRot[i] = AdaptiveMode() && SourceArmSide(_pairs[i].Source.name) != 0
+                                ? _pairs[i].Target.rotation
+                                : _lastBaseValid && _lastBaseRot != null
                                 && _lastBaseRot.Length == _pairs.Length
                                 ? _lastBaseRot[i]
                                 : _pairs[i].Target.rotation;
@@ -15496,7 +15496,9 @@ namespace MikuPlayerReplacer
                     // reason: they grip the vanilla tool, and crossfading them
                     // from the captured pose pulls the hands off the tool for
                     // the whole fade. The body still gets the eased transition.
-                    int gripSkip = _poseGripSide;
+                    // Adaptive IK shares the body's crossfade; otherwise hands
+                    // jump to a live grip while the chest is still turning.
+                    int gripSkip = AdaptiveMode() ? 0 : _poseGripSide;
                     bool blendThis = poseBlend && (_poseFreeSide == 0
                         || SourceArmSide(p.Source.name) != _poseFreeSide)
                         && (gripSkip == 0
