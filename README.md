@@ -4,12 +4,14 @@
 不是简单挂在相机上：插件在运行时读取游戏主角的 64 根骨骼，把 **55 根骨骼（含双腿、双臂和全部手指）**
 的旋转实时重定向到模型上，所以游泳、走路、手臂动作、手指动作都会跟着走。
 
-- 版本：0.1.4
+- 版本：0.1.6
 - 游戏版本：Steam 1.22.83031（Unity 2019.4.36 / Mono / 64 位）
 - 插件：BepInEx 5.4.23.5，`PlayerModelReplacer.dll`（游戏日志里显示为 **MMS**）
 - 模型：**不内置**。自己把 PMX 模型和贴图放进 `BepInEx\plugins\PlayerModelReplacer\Models\`
 
 ## 依赖
+
+当前默认持物方式为 `HoldMode = VanillaAdaptive`：保留原版物品轨迹，按模型掌心校准解算手臂；肘部方向约束覆盖工具、鱼类和普通手持物。下文 `Model`、`Game` 相关段落为保留的旧模式说明。已有配置如仍为 `Model`，需手动改为 `VanillaAdaptive` 才启用新方案。
 
 需要先安装 **BepInEx 5.4.x（x64 / Unity Mono 版）**，并确认游戏能正常生成
 `BepInEx\LogOutput.log`。本包只包含插件本体，不含 BepInEx。
@@ -646,7 +648,7 @@ BepInEx\plugins\PlayerModelReplacer\Models\
   “镜头转到哪、角色转到哪”。
 - 第三人称下镜头贴着头部（小键盘把距离拉到最近，或被地形/基地挤到角色身后）时，头部仍然
   显示，不会消失；这时镜头可能贴进头发或头部网格，看到一些近裁剪面切开的截面属于正常现象。
-- 持物默认 `HoldMode = Model`（以模型为准）：掏出/收起时工具保持原版姿势，动画不被破坏；
+- 旧版 `HoldMode = Model`（以模型为准）：掏出/收起时工具保持原版姿势，动画不被破坏；
   稳定持物后工具后拉 `ItemPull`（默认 6 cm），再用 `HoldArmIk` 只解算双臂位置到后拉后的握把。
   手骨、手指、锁骨不动，所以不会拉手指或折上臂；后拉/解算权重只在稳定持物时生效。
   如果觉得工具离镜头太近，调小 `ItemPull`；想完全不后拉/不解算就设 `ItemPull = 0` 或
@@ -682,3 +684,5 @@ bash tools/build_plugin.sh
 
 脚本使用 Unity 2019.4 自带的 Mono + csc，引用游戏目录下的 `Assembly-CSharp.dll`、`UnityEngine.*.dll`
 以及 BepInEx 的 `BepInEx.dll` / `0Harmony.dll`。
+
+[0.1.6 performance and source build notes](docs/performance.md)

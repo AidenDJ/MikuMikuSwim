@@ -176,7 +176,7 @@ namespace MikuPlayerReplacer
         public const string PluginGuid = "com.miku.subnautica.playerreplacer";
         // MMS = MikuMikuSwim: the mod's short name, also the PDA tab label.
         public const string PluginName = "MMS";
-        public const string PluginVersion = "0.1.5";
+        public const string PluginVersion = "0.1.6";
 
         // ---- configuration ----
         private ConfigEntry<float> _scale;
@@ -3002,7 +3002,7 @@ namespace MikuPlayerReplacer
         {
             public Transform Source;
             public Transform SmrTransform;
-            public Quaternion SourceRestLocalRot;
+            public Quaternion SourceRestLocalInverse;
             public Transform Target;
             // Model bone rest rotation expressed in the container's local space,
             // so the container's own rotation (which follows player_view) is not
@@ -3267,7 +3267,7 @@ namespace MikuPlayerReplacer
                 "hand correction, but the palm can stay rotated off the handle). Off: " +
                 "plain retargeted vanilla arm animation, no solve. The tool is never " +
                 "moved in any mode.");
-            _holdIkLog = Config.Bind("Model", "HoldIkLog", true,
+            _holdIkLog = Config.Bind("Model", "HoldIkLog", false,
                 "One line per second while the grip IK is active: target source, " +
                 "distance versus reach, shoulder assist, elbow/wrist angles, and how " +
                 "far the model's palm is from the item's grip. Turn off once tuned.");
@@ -15159,7 +15159,7 @@ namespace MikuPlayerReplacer
             BonePair p = new BonePair();
             p.Source = sb.Bone;
             p.SmrTransform = sb.SmrTransform;
-            p.SourceRestLocalRot = sb.RestLocalRot;
+            p.SourceRestLocalInverse = Quaternion.Inverse(sb.RestLocalRot);
             p.Target = bones[targetIndex];
             p.TargetRestRot = targetRest[targetIndex];
             p.Depth = depths[targetIndex];
@@ -15358,7 +15358,7 @@ namespace MikuPlayerReplacer
                 {
                     BonePair p = _pairs[i];
                     Quaternion smrInv = Quaternion.Inverse(p.SmrTransform.rotation);
-                    _deltas[i] = smrInv * p.Source.rotation * Quaternion.Inverse(p.SourceRestLocalRot);
+                    _deltas[i] = smrInv * p.Source.rotation * p.SourceRestLocalInverse;
                 }
 
                 // Abrupt-switch detector. The held-item and cinematic triggers in
@@ -16454,6 +16454,12 @@ namespace MikuPlayerReplacer
             }
         }
 
+        internal static bool VerboseLoggingEnabled()
+        {
+            MikuPlayerReplacerPlugin plugin = _instanceBox as MikuPlayerReplacerPlugin;
+            return !ReferenceEquals(plugin, null) && plugin._verbose != null && plugin._verbose.Value;
+        }
+
         /// <summary>
         /// Once per frame: in the shoulder view the model turns towards the
         /// direction it is travelling, so the camera can be orbited with the mouse
@@ -17247,6 +17253,14 @@ namespace MikuPlayerReplacer
         private static FieldInfo _animatorField;
         private static bool _animatorFieldLooked;
         private static float _suppressLogAt;
+        private static ArmsController _cachedArms;
+        private static Animator _cachedAnimator;
+        private static readonly int ViewTurnId = Animator.StringToHash("view_turn");
+        private static readonly int ViewPitchId = Animator.StringToHash("view_pitch");
+        private static readonly int MoveSpeedId = Animator.StringToHash("move_speed");
+        private static readonly int MoveXId = Animator.StringToHash("move_speed_x");
+        private static readonly int MoveYId = Animator.StringToHash("move_speed_y");
+        private static readonly int MoveZId = Animator.StringToHash("move_speed_z");
 
         [HarmonyPrefix]
         private static void Prefix()
@@ -17288,24 +17302,30 @@ namespace MikuPlayerReplacer
                     _animatorField = typeof(ArmsController).GetField("animator",
                         BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
                 }
-                Animator animator = _animatorField != null
-                    ? _animatorField.GetValue(arms) as Animator : null;
+                if (_cachedArms != arms || _cachedAnimator == null)
+                {
+                    _cachedArms = arms;
+                    _cachedAnimator = _animatorField != null
+                        ? _animatorField.GetValue(arms) as Animator : null;
+                }
+                Animator animator = _cachedAnimator;
                 if (animator == null || !animator.isActiveAndEnabled)
                 {
                     return;
                 }
                 // Raw camera/velocity inputs the game wrote this frame, before
                 // scaling. Kept for the throttle log and reused for the writes.
-                float rawTurn = animator.GetFloat("view_turn");
-                float rawPitch = animator.GetFloat("view_pitch");
-                float rawSpeed = animator.GetFloat("move_speed");
-                float rawX = animator.GetFloat("move_speed_x");
-                float rawY = animator.GetFloat("move_speed_y");
-                float rawZ = animator.GetFloat("move_speed_z");
+                float rawTurn = animator.GetFloat(ViewTurnId);
+                float rawPitch = animator.GetFloat(ViewPitchId);
+                float rawSpeed = animator.GetFloat(MoveSpeedId);
+                float rawX = animator.GetFloat(MoveXId);
+                float rawY = animator.GetFloat(MoveYId);
+                float rawZ = animator.GetFloat(MoveZId);
                 // What the camera was doing to the pose while the player stands
                 // still. If "view_turn" and "move_speed_x/z" both move with the
                 // mouse here, the suppression is what keeps the model still.
-                if (weight > 0.99f && Time.unscaledTime >= _suppressLogAt)
+                if (MikuPlayerReplacerPlugin.VerboseLoggingEnabled()
+                    && weight > 0.99f && Time.unscaledTime >= _suppressLogAt)
                 {
                     _suppressLogAt = Time.unscaledTime + 2f;
                     MikuPlayerReplacerPlugin.LogFromPatch("Idle anim raw turn="
@@ -17317,8 +17337,8 @@ namespace MikuPlayerReplacer
                 // Scale the game's own values instead of hard-zeroing them, so
                 // the fade in and out blends the arms and head back and forth.
                 float keep = 1f - Mathf.Clamp01(weight);
-                animator.SetFloat("view_turn", rawTurn * keep);
-                animator.SetFloat("view_pitch", rawPitch * keep);
+                animator.SetFloat(ViewTurnId, rawTurn * keep);
+                animator.SetFloat(ViewPitchId, rawPitch * keep);
                 // The float idle still has a little velocity (buoyancy, the swim
                 // bob, currents), and SetPlayerSpeedParameters feeds it to the
                 // swim blend tree in *camera* space (GetRelativeVelocity uses
@@ -17327,10 +17347,10 @@ namespace MikuPlayerReplacer
                 // spine, which is what kept the hair, skirt and tie swaying while
                 // the head was already frozen. With no input and no travel the
                 // pose should not react to the camera at all, so these go too.
-                animator.SetFloat("move_speed", rawSpeed * keep);
-                animator.SetFloat("move_speed_x", rawX * keep);
-                animator.SetFloat("move_speed_y", rawY * keep);
-                animator.SetFloat("move_speed_z", rawZ * keep);
+                animator.SetFloat(MoveSpeedId, rawSpeed * keep);
+                animator.SetFloat(MoveXId, rawX * keep);
+                animator.SetFloat(MoveYId, rawY * keep);
+                animator.SetFloat(MoveZId, rawZ * keep);
             }
             catch (Exception)
             {
