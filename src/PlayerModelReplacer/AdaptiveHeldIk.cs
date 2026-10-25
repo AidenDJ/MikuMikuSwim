@@ -26,6 +26,8 @@ namespace MikuPlayerReplacer
             public Quaternion AimCorrection = Quaternion.identity;
             public bool TwistSupport;
             public float TwistScale = 1f;
+            public bool HasTwistReference;
+            public float ContinuousTwist;
             public float DistributedTwist;
             public float RemovedUpperRoll;
             public Vector3 ElbowPoleLocal;
@@ -265,7 +267,8 @@ namespace MikuPlayerReplacer
             if (!AdaptiveMode())
             {
                 _adaptiveEquipBodyBlend = false;
-                foreach (AdaptiveHand h in _adaptiveHands) if (h != null) h.Weight = 0f;
+                foreach (AdaptiveHand h in _adaptiveHands)
+                    if (h != null) { h.Weight = 0f; h.HasTwistReference = false; }
                 return;
             }
             Player player = Player.main;
@@ -297,6 +300,7 @@ namespace MikuPlayerReplacer
                     if (state == null) continue;
                     state.Weight = 0f;
                     state.PoleValid = state.ElbowPoleValid = false;
+                    state.HasTwistReference = false;
                 }
                 return;
             }
@@ -328,12 +332,13 @@ namespace MikuPlayerReplacer
                 if (changed)
                 {
                     state.PoleValid = state.ElbowPoleValid = false;
+                    state.HasTwistReference = false;
                     if (item != null) state.Weight = 0f;
                 }
                 bool active = item != null && (side == 1 || left);
                 state.Weight = Mathf.MoveTowards(state.Weight, active ? 1f : 0f,
                     step);
-                if (state.Weight <= 0f) continue;
+                if (state.Weight <= 0f) { state.HasTwistReference = false; continue; }
                 float solveWeight = state.Weight * (active ? bodyWeight : 1f);
                 float shapeWeight = solveWeight;
                 if (active && _adaptiveCarryActive)
@@ -398,7 +403,7 @@ namespace MikuPlayerReplacer
                 mid.localRotation = mq * Quaternion.Slerp(Quaternion.identity, state.MidCorrection, solveWeight);
                 hand.localRotation = hq * Quaternion.Slerp(Quaternion.identity, state.HandCorrection, solveWeight);
                 if (state.TwistSupport)
-                    state.DistributedTwist = DistributeAdaptiveTwist(upper, mid, hand, _armRest[side], solveWeight * state.TwistScale);
+                    state.DistributedTwist = DistributeAdaptiveTwist(upper, mid, hand, _armRest[side], solveWeight * state.TwistScale, state);
                 return;
             }
             Vector3 sourceOffset = source.TransformVector(state.SourcePoint);
@@ -458,7 +463,7 @@ namespace MikuPlayerReplacer
             state.PoleLocal = _container.InverseTransformDirection(pole.normalized);
             state.PoleValid = true;
             ArmRest armRest = _armRest[side];
-            if (fixedSupport && supportTarget != null && armRest != null && armRest.HasGripFrame)
+            if (normalizeRoot && armRest != null && armRest.HasGripFrame)
             {
                 // Select the elbow plane that best matches the fixed support
                 // palm's natural forearm direction. A torso-fixed pole can force
@@ -495,7 +500,7 @@ namespace MikuPlayerReplacer
                     elbow - upper.position) * upper.rotation;
                 mid.rotation = Quaternion.FromToRotation(hand.position - mid.position,
                     wrist - mid.position) * mid.rotation;
-                if (((fixedSupport && supportTarget != null) || _adaptiveCarryActive) && armRest != null)
+                if ((normalizeRoot || _adaptiveCarryActive) && armRest != null)
                 {
                     OrientAdaptiveSupport(mid, hand, desired, armRest.WristLocal);
                     break;
@@ -526,7 +531,7 @@ namespace MikuPlayerReplacer
                     finalElbow - upper.position) * upper.rotation;
                 mid.rotation = Quaternion.FromToRotation(hand.position - mid.position,
                     finalWrist - mid.position) * mid.rotation;
-                if (((fixedSupport && supportTarget != null) || _adaptiveCarryActive) && armRest != null)
+                if ((normalizeRoot || _adaptiveCarryActive) && armRest != null)
                     OrientAdaptiveSupport(mid, hand, desired, armRest.WristLocal);
                 else hand.rotation = desired;
             }
@@ -548,7 +553,7 @@ namespace MikuPlayerReplacer
             state.TwistSupport = normalizeRoot;
             state.TwistScale = shapeWeight;
             state.DistributedTwist = state.TwistSupport
-                ? DistributeAdaptiveTwist(upper, mid, hand, armRest, Mathf.Min(solveWeight, shapeWeight)) : 0f;
+                ? DistributeAdaptiveTwist(upper, mid, hand, armRest, Mathf.Min(solveWeight, shapeWeight), state) : 0f;
             if (_holdIkLog.Value && Time.unscaledTime >= state.NextLog)
             {
                 state.NextLog = Time.unscaledTime + 1f;
@@ -652,7 +657,7 @@ namespace MikuPlayerReplacer
         }
 
         private static float DistributeAdaptiveTwist(Transform upper, Transform elbow,
-            Transform hand, ArmRest rest, float weight)
+            Transform hand, ArmRest rest, float weight, AdaptiveHand state)
         {
             if (rest == null || rest.ArmTwist == null || rest.ArmTwist.parent != upper
                 || !elbow.IsChildOf(rest.ArmTwist)) return 0f;
@@ -666,7 +671,11 @@ namespace MikuPlayerReplacer
             // Mixing a local delta with a world axis silently extracts the
             // wrong rotation, especially with the left arm and swimming pitch.
             float angle = SignedTwist(elbowWorld * Quaternion.Inverse(neutralElbow), axisWorld);
-            angle = Mathf.Clamp(angle, -150f, 150f) * weight;
+            if (state.HasTwistReference)
+                angle = state.ContinuousTwist + Mathf.DeltaAngle(state.ContinuousTwist, angle);
+            state.ContinuousTwist = Mathf.Clamp(angle, -150f, 150f);
+            state.HasTwistReference = true;
+            angle = state.ContinuousTwist * weight;
             Vector3 axisLocal = Quaternion.Inverse(upper.rotation) * axisWorld;
             rest.ArmTwist.localRotation = Quaternion.AngleAxis(angle, axisLocal);
             if (rest.ArmTwistHelpers != null && rest.ArmTwistRatios != null)
@@ -736,6 +745,14 @@ namespace MikuPlayerReplacer
                 clav.localRotation = Quaternion.RotateTowards(calibrated.ClavBindLocal, clav.localRotation, 25f);
             if (aim != null)
                 aim.localRotation = Quaternion.RotateTowards(calibrated.AimBindLocal, aim.localRotation, 30f);
+            if (_adaptiveTool == null)
+            {
+                // Ordinary held objects have no authored shoulder target. Keep
+                // scapula/collar pose on the torso bind reference; do not copy
+                // the suit's swim-layer shoulder roll into this model's skin.
+                if (clav != null) clav.localRotation = calibrated.ClavBindLocal;
+                if (aim != null) aim.localRotation = calibrated.AimBindLocal;
+            }
             Quaternion parentSwing = upper.parent.rotation * Quaternion.Inverse(basis * rest.ParentLocal);
             Quaternion upperReference = parentSwing * basis * rest.UpperLocal;
             upper.rotation = Quaternion.FromToRotation(parentSwing * basis * rest.UpperDir,

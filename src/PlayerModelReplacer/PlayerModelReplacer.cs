@@ -177,7 +177,7 @@ namespace MikuPlayerReplacer
         public const string PluginGuid = "com.miku.subnautica.playerreplacer";
         // MMS = MikuMikuSwim: the mod's short name, also the PDA tab label.
         public const string PluginName = "MMS";
-        public const string PluginVersion = "0.1.10";
+        public const string PluginVersion = "0.1.11";
 
         // ---- configuration ----
         private ConfigEntry<float> _scale;
@@ -6589,7 +6589,7 @@ namespace MikuPlayerReplacer
                 }
 
                 // never treat our own replacement meshes as the source
-                if (r.name == "Miku_Body" || r.name == "Miku_Head")
+                if (r.name.StartsWith("Miku_", StringComparison.Ordinal))
                 {
                     continue;
                 }
@@ -6754,6 +6754,12 @@ namespace MikuPlayerReplacer
         // materials / textures
         // ------------------------------------------------------------------
 
+        private static bool IsGameSuitMaterial(Material material)
+        {
+            return material != null && material.shader != null
+                && string.Equals(material.shader.name, "MarmosetUBER", StringComparison.Ordinal);
+        }
+
         private void EnsureMaterials(SourceMap sources)
         {
             if (_materials != null)
@@ -6767,15 +6773,17 @@ namespace MikuPlayerReplacer
                 Material m = sources.SuitRenderers[i].sharedMaterial;
                 if (m != null)
                 {
-                    baseMat = m;
-                    break;
+                    if (baseMat == null) baseMat = m;
+                    // Held items may use Standard. Only the suit's supported
+                    // shader can be initialized with Marmoset-specific keywords.
+                    if (IsGameSuitMaterial(m)) { baseMat = m; break; }
                 }
             }
 
             Shader standard = Shader.Find("Standard");
             Shader chosen = null;
 
-            if (_useGameShader.Value && baseMat != null)
+            if (_useGameShader.Value && IsGameSuitMaterial(baseMat))
             {
                 chosen = baseMat.shader;
             }
@@ -7606,6 +7614,15 @@ namespace MikuPlayerReplacer
                 m.EnableKeyword("MARMO_ALPHA");
                 m.SetOverrideTag("RenderType", "Transparent");
             }
+            else
+            {
+                // Do not inherit transparent state from a held-item template.
+                if (m.HasProperty("_SrcBlend")) m.SetFloat("_SrcBlend", (float)BlendMode.One);
+                if (m.HasProperty("_DstBlend")) m.SetFloat("_DstBlend", (float)BlendMode.Zero);
+                if (m.HasProperty("_ZWrite")) m.SetFloat("_ZWrite", 1f);
+                m.DisableKeyword("MARMO_ALPHA");
+                m.SetOverrideTag("RenderType", "TransparentCutout");
+            }
 
             if (isDecal)
             {
@@ -7769,14 +7786,14 @@ namespace MikuPlayerReplacer
                 blend = false;
             }
 
-            if (_useGameShader.Value && _suitBaseMat != null)
+            if (_useGameShader.Value && IsGameSuitMaterial(_suitBaseMat))
             {
                 return CreateGameMaterial(md, isDecal, blend);
             }
 
             // The "01" is a flat sticker that should always read as the texture does; the
             // lit Standard shader turned it into a dark red smear on the arm.
-            Shader shader = _shader;
+            Shader shader = Shader.Find("Standard") ?? _shader;
             if (isDecal)
             {
                 Shader unlitCutout = Shader.Find("Unlit/Transparent Cutout");
