@@ -563,6 +563,11 @@ namespace MikuPlayerReplacer
             if (stem.Length > 1 && stem.EndsWith("W"))
             {
                 string baseName = stem.Substring(0, stem.Length - 1);
+                // Sour's cuff helper 手W is rooted along the forearm. It is
+                // not the wrist joint: folding to the shoulder separates the
+                // sleeve, and pinning to the hand adds the full wrist bend.
+                if (baseName == "手" && NameMap.TryGetValue("ひじ" + side, out mapped))
+                    return mapped;
                 if ((baseName == "腕" || baseName == "ひじ" || baseName == "手首" ||
                      baseName == "首") &&
                     NameMap.TryGetValue(baseName + side, out mapped))
@@ -657,7 +662,7 @@ namespace MikuPlayerReplacer
         {
             for (int i = 0; i < keywords.Length; i++)
             {
-                string key = keywords[i].ToLowerInvariant();
+                string key = keywords[i]; // Keywords are normalized constants.
                 if (lower.IndexOf(key, StringComparison.Ordinal) >= 0)
                 {
                     return true;
@@ -884,7 +889,7 @@ namespace MikuPlayerReplacer
             bool[] keep = new bool[boneCount];
             for (int i = 0; i < boneCount; i++)
             {
-                if (mapped[i] != null || IsPhysicsChainName(src.Bones[i].Name)
+                if (mapped[i] != null || (!src.Bones[i].Ik && IsPhysicsChainName(src.Bones[i].Name))
                     || IsTwistHelperName(src.Bones[i].Name))
                 {
                     keep[i] = true;
@@ -1014,9 +1019,11 @@ namespace MikuPlayerReplacer
             // claims (the "D" copies) start at the bone that owns the game name.
             // MMD helper bones override that with the limb bone they belong to.
             int[] resolve = new int[boneCount];
+            string[] foldTargets = new string[boneCount];
+            for (int i = 0; i < boneCount; i++) foldTargets[i] = FoldTarget(src.Bones[i].Name);
             for (int i = 0; i < boneCount; i++)
             {
-                string fold = FoldTarget(src.Bones[i].Name);
+                string fold = foldTargets[i];
                 int foldIndex;
                 if (fold != null && keptByName.TryGetValue(fold, out foldIndex))
                 {
@@ -1025,16 +1032,28 @@ namespace MikuPlayerReplacer
                 }
                 int p = keeper[i];
                 int guard = 0;
+                bool resolvedAlias = false;
                 while (p >= 0 && p < boneCount && guard++ <= boneCount)
                 {
                     p = keeper[p];
-                    if (p < 0 || p >= boneCount || keep[p])
+                    if (p < 0 || p >= boneCount)
                     {
                         break;
                     }
+                    // Apply a helper alias while walking ancestors too. A sleeve
+                    // below 手W/ひじW must follow that limb, not skip all helpers
+                    // and land on the first retained shoulder bone.
+                    string ancestorFold = foldTargets[p];
+                    if (ancestorFold != null && keptByName.TryGetValue(ancestorFold, out foldIndex))
+                    {
+                        resolve[i] = foldIndex;
+                        resolvedAlias = true;
+                        break;
+                    }
+                    if (keep[p]) break;
                     p = src.Bones[p].Parent;
                 }
-                resolve[i] = p >= 0 && p < boneCount ? newIndex[p] : -1;
+                if (!resolvedAlias) resolve[i] = p >= 0 && p < boneCount ? newIndex[p] : -1;
             }
 
             ModelData model = new ModelData();
@@ -1062,6 +1081,7 @@ namespace MikuPlayerReplacer
                     }
                 }
                 b.Name = boneName;
+                b.IkControl = pb.Ik;
 
                 int newParent = -1;
                 int p = pb.Parent;
@@ -1279,6 +1299,10 @@ namespace MikuPlayerReplacer
             md.Normals = new Vector3[n];
             md.Uvs = new Vector2[n];
             md.Weights = new BoneWeight[n];
+            // Four reusable scratch slots instead of two tiny arrays per vertex.
+            // Only [0,count) is read; each newly used slot is overwritten.
+            int[] idx = new int[4];
+            float[] wgt = new float[4];
 
             for (int i = 0; i < n; i++)
             {
@@ -1293,8 +1317,6 @@ namespace MikuPlayerReplacer
                 float[] bw = src.VertexWeights[v];
                 // Several PMX bones can fold into one kept bone, so merge first and
                 // then keep the four heaviest influences.
-                int[] idx = new int[4];
-                float[] wgt = new float[4];
                 int count = 0;
                 for (int k = 0; k < 4; k++)
                 {

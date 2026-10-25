@@ -21,6 +21,7 @@ namespace MikuPlayerReplacer
         public Quaternion LocalRot;
         // PMX inherit-rotation link, remapped to the imported bone order.
         public bool InheritsRotation;
+        public bool IkControl;
         public int InheritParent = -1;
         public float InheritRatio;
     }
@@ -176,7 +177,7 @@ namespace MikuPlayerReplacer
         public const string PluginGuid = "com.miku.subnautica.playerreplacer";
         // MMS = MikuMikuSwim: the mod's short name, also the PDA tab label.
         public const string PluginName = "MMS";
-        public const string PluginVersion = "0.1.9";
+        public const string PluginVersion = "0.1.10";
 
         // ---- configuration ----
         private ConfigEntry<float> _scale;
@@ -702,6 +703,8 @@ namespace MikuPlayerReplacer
             public Vector3[] RestDirWorld; // rest forward of each segment in bind world space
             public Vector3[] RestUpWorld;  // twist-free roll reference per bone, bind world space
             public Quaternion[] RestRotWorld; // bone rotation in bind world space
+            public Quaternion[] RestAimToBone;
+            public Quaternion RestRootInverse;
             public Quaternion[] RestBend;  // rest turn from segment k to k+1, in root space
             public float[] Length;         // world segment lengths
             public Vector3[] Points;       // simulated joints in world space
@@ -1867,6 +1870,7 @@ namespace MikuPlayerReplacer
         /// </summary>
         private void RestoreMovedItem()
         {
+            RestoreAdaptiveEquipItem();
             if (_movedItem != null && _movedItemBaseValid)
             {
                 Transform track = _movedItem.transform;
@@ -3219,7 +3223,8 @@ namespace MikuPlayerReplacer
             _offsetY = Config.Bind("Model", "OffsetY", 0f, "Extra local Y offset.");
             _offsetZ = Config.Bind("Model", "OffsetZ", 0f, "Extra local Z offset.");
             _holdMode = Config.Bind("Model", "HoldMode", "VanillaAdaptive",
-                "VanillaAdaptive (default): independent palm-constrained IK, vanilla item trajectory. " +
+                "VanillaAdaptive (default): the item and hands share the equip transition, " +
+                "then resume the vanilla item trajectory with palm-constrained IK. " +
                 "Model: during the draw " +
                 "the item keeps the game-authored pose; after it settles the item is " +
                 "pulled towards the character by ItemPull and the arms are solved onto " +
@@ -8899,6 +8904,7 @@ namespace MikuPlayerReplacer
             GameObject containerGo = new GameObject("Miku_PlayerModel");
             containerGo.layer = pv.gameObject.layer;
             containerGo.AddComponent<LateRetargetHost>();
+            containerGo.AddComponent<AdaptiveItemRestoreHost>();
             _container = containerGo.transform;
             _container.SetParent(pv, false);
             _container.localRotation = Quaternion.Euler(0f, _yaw.Value, 0f);
@@ -10635,6 +10641,7 @@ namespace MikuPlayerReplacer
                     chain.RestBend[k] = Quaternion.FromToRotation(
                         chain.RestDirLocal[k], chain.RestDirLocal[k + 1]);
                 }
+                CaptureRestRot(chain);
                 _clothChains.Add(chain);
                 created++;
             }
@@ -10888,7 +10895,7 @@ namespace MikuPlayerReplacer
             for (int i = 0; i < n; i++)
             {
                 string name = _data.Bones[i].Name;
-                if (!PmxConverter.IsPhysicsChainName(name))
+                if (_data.Bones[i].IkControl || !PmxConverter.IsPhysicsChainName(name))
                 {
                     continue;
                 }
@@ -11017,6 +11024,16 @@ namespace MikuPlayerReplacer
             out bool light)
         {
             light = false;
+            // Exporters may append a zero-length tip/controller or a coincident
+            // bridge. It has no segment to simulate; keep the valid chain.
+            for (int k = chain.Count - 1; k > 0; k--)
+            {
+                Transform current = bones[chain[k]], previous = bones[chain[k - 1]];
+                if (current != null && previous != null
+                    && (current.position - previous.position).sqrMagnitude < 0.000004f)
+                    chain.RemoveAt(k);
+            }
+            if (chain.Count < 2) return false;
             int segments = chain.Count;
             Transform[] chainBones = new Transform[segments];
             for (int k = 0; k < segments; k++)
@@ -11293,17 +11310,21 @@ namespace MikuPlayerReplacer
         // replaced, without the simulation running.
         private static void CaptureRestRot(ClothChain ch)
         {
+            ch.RestRootInverse = Quaternion.Inverse(ch.RestRootRot);
             if (ch.Bones == null || ch.Bones.Length == 0)
             {
                 ch.RestLocalRot = null;
                 return;
             }
             ch.RestLocalRot = new Quaternion[ch.Bones.Length];
+            ch.RestAimToBone = new Quaternion[ch.Bones.Length];
             for (int i = 0; i < ch.Bones.Length; i++)
             {
                 ch.RestLocalRot[i] = ch.Bones[i] != null
                     ? ch.Bones[i].localRotation
                     : Quaternion.identity;
+                ch.RestAimToBone[i] = Quaternion.Inverse(Quaternion.LookRotation(
+                    ch.RestDirWorld[i], ch.RestUpWorld[i])) * ch.RestRotWorld[i];
             }
         }
 
@@ -12382,12 +12403,19 @@ namespace MikuPlayerReplacer
 
             dt = Mathf.Clamp(dt, 0.001f, 0.05f);
             float t = Time.time;
-            GatherClothColliders();
             bool hairOn = _hairPhysics == null || _hairPhysics.Value;
             bool skirtOn = _skirtPhysics == null || _skirtPhysics.Value;
             bool clothesOn = _clothesPhysics == null || _clothesPhysics.Value;
             bool accessoryOn = _accessoryPhysics == null || _accessoryPhysics.Value;
             bool hairCollide = _hairCollision == null || _hairCollision.Value;
+            if (!hairOn && !skirtOn && !clothesOn && !accessoryOn)
+            {
+                for (int c = 0; c < _clothChains.Count; c++) RestPoseChain(_clothChains[c]);
+                return;
+            }
+            // No enabled collision path consumes these body transforms when
+            // both hair/accessory collision and skirt simulation are off.
+            if (hairCollide || skirtOn) GatherClothColliders();
             // Waterline for the surface/dry split. NaN means no ocean is loaded
             // (main menu), in which case the old all-water behaviour applies.
             float waterLevel = WaterSurfaceY();
@@ -12776,7 +12804,7 @@ namespace MikuPlayerReplacer
                 // aim when the body yaws, so its whole rotation comes from the up
                 // reference. The accessories below use this delta as the target
                 // frame they lag behind, not as an immediate replacement.
-                Quaternion rootDelta = ch.Root.rotation * Quaternion.Inverse(ch.RestRootRot);
+                Quaternion rootDelta = ch.Root.rotation * ch.RestRootInverse;
                 Quaternion lightDelta = ch.Light
                     ? ch.Swing * rootDelta
                     : Quaternion.identity;
@@ -12885,9 +12913,7 @@ namespace MikuPlayerReplacer
                     }
 
                     Quaternion target = Quaternion.LookRotation(aim, u);
-                    Quaternion bind = Quaternion.LookRotation(
-                        ch.RestDirWorld[i], ch.RestUpWorld[i]);
-                    b.rotation = (target * Quaternion.Inverse(bind)) * ch.RestRotWorld[i];
+                    b.rotation = target * ch.RestAimToBone[i];
                     prevAim = aim;
                 }
             }
@@ -17057,6 +17083,7 @@ namespace MikuPlayerReplacer
 
         private void OnDisable()
         {
+            RestoreAdaptiveEquipItem();
             Logger.LogInfo("OnDisable called.");
         }
 
@@ -17094,6 +17121,15 @@ namespace MikuPlayerReplacer
         {
             MikuPlayerReplacerPlugin.PumpLate();
         }
+    }
+
+    // Remove the previous render-frame carry before game Update/animation can
+    // use the item. The carry is rebuilt from the authored pose each late pass.
+    [DefaultExecutionOrder(-32000)]
+    internal sealed class AdaptiveItemRestoreHost : MonoBehaviour
+    {
+        private void Update() { MikuPlayerReplacerPlugin.RestoreAdaptiveItemForFrame(); }
+        private void OnDisable() { MikuPlayerReplacerPlugin.RestoreAdaptiveItemForFrame(); }
     }
 
     [HarmonyPatch(typeof(Player), "LateUpdate")]
