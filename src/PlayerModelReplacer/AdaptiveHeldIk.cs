@@ -264,6 +264,10 @@ namespace MikuPlayerReplacer
             Transform aimBone = state.Aim;
             Transform source = state.Source;
             bool rifle = _adaptiveRifle;
+            // Fish and ordinary pickups do not have PlayerTool, but their
+            // shoulder aim still carries the suit's bind-frame roll.
+            bool ordinaryGrip = tool == null;
+            bool normalizeRoot = twoHanded || ordinaryGrip;
             bool fixedSupport = side == 0 && tool is StasisRifle;
             Transform live = arms != null ? (side == 0 ? arms.leftHand : arms.rightHand) : null;
             // Parent ownership beats the FP preference for hand-parented items.
@@ -299,13 +303,12 @@ namespace MikuPlayerReplacer
             Vector3 target = grip - desired * modelOffset;
             float a = Vector3.Distance(upper.position, mid.position);
             float b = Vector3.Distance(mid.position, hand.position);
-            // Two-handed aim bones carry suit-specific axial roll. Rebuild their
-            // anatomical frame from THIS frame's unmodified positions, before IK.
-            // Single-hand tools keep the already validated animation path.
-            if (twoHanded) PrepareAdaptiveRoot(side, clav, aimBone, upper, mid);
+            // Apply the same bind-frame correction to non-tool pickups as to
+            // two-handed grips, using this frame's unmodified geometry.
+            if (normalizeRoot) PrepareAdaptiveRoot(side, clav, aimBone, upper, mid);
             // Reach assistance rotates the existing clavicle; no bone translation or stretching.
             float excess = Vector3.Distance(upper.position, target) - (a + b) * 0.97f;
-            if (!rifle && excess > 0f && clav != null && upper.IsChildOf(clav))
+            if (!rifle && !ordinaryGrip && excess > 0f && clav != null && upper.IsChildOf(clav))
             {
                 Vector3 offset = upper.position - clav.position;
                 if (offset.sqrMagnitude > 1e-8f)
@@ -446,7 +449,7 @@ namespace MikuPlayerReplacer
                     Vector3.Distance(upper.position, target), a + b,
                     Quaternion.Angle(hand.rotation * state.ModelFrame, live.rotation * state.SourceFrame),
                     Vector3.Angle(upper.position - mid.position, hand.position - mid.position),
-                    Quaternion.Angle(state.WristRest, hand.localRotation), twoHanded,
+                    Quaternion.Angle(state.WristRest, hand.localRotation), normalizeRoot,
                     supportTarget != null ? supportTarget.name : "vanilla-hand", state.DistributedTwist, elbowSafe));
             }
         }
