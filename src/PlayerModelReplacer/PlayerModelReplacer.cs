@@ -177,7 +177,7 @@ namespace MikuPlayerReplacer
         public const string PluginGuid = "com.miku.subnautica.playerreplacer";
         // MMS = MikuMikuSwim: the mod's short name, also the PDA tab label.
         public const string PluginName = "MMS";
-        public const string PluginVersion = "0.1.14";
+        public const string PluginVersion = "0.1.15";
 
         // ---- configuration ----
         private ConfigEntry<float> _scale;
@@ -4570,6 +4570,7 @@ namespace MikuPlayerReplacer
             {
                 return;
             }
+            CaptureSuitTemplate(_diagSources);
             System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
 
             Dictionary<string, string> savedFiles = _textureFiles;
@@ -6587,7 +6588,8 @@ namespace MikuPlayerReplacer
                 }
 
                 // never treat our own replacement meshes as the source
-                if (r.name.StartsWith("Miku_", StringComparison.Ordinal))
+                if (r.GetComponentInParent<LateRetargetHost>() != null
+                    || r.name.StartsWith("Miku_", StringComparison.Ordinal))
                 {
                     continue;
                 }
@@ -6758,16 +6760,61 @@ namespace MikuPlayerReplacer
                 && string.Equals(material.shader.name, "MarmosetUBER", StringComparison.Ordinal);
         }
 
-        private void EnsureMaterials(SourceMap sources)
+        private void CaptureSuitTemplate(SourceMap sources)
         {
-            if (_materials != null)
-            {
-                return;
-            }
-
-            Material baseMat = null;
+            if (IsGameSuitMaterial(_suitBaseMat) || sources == null) return;
             for (int i = 0; i < sources.SuitRenderers.Count; i++)
             {
+                SkinnedMeshRenderer renderer = sources.SuitRenderers[i];
+                if (renderer == null || renderer.GetComponentInParent<LateRetargetHost>() != null) continue;
+                Material[] candidates = renderer.sharedMaterials;
+                for (int m = 0; m < candidates.Length; m++)
+                {
+                    if (!IsGameSuitMaterial(candidates[m])) continue;
+                    // The original renderer can replace or release its material
+                    // during suit/scene changes. Keep an owned template, rather
+                    // than borrowing that renderer's material for later previews.
+                    if (_suitBaseMat != null) Destroy(_suitBaseMat);
+                    _suitBaseMat = new Material(candidates[m]);
+                    _suitBaseMat.name = "Miku_SuitTemplate";
+                    _suitBaseMat.hideFlags = HideFlags.HideAndDontSave;
+                    Logger.LogInfo("Retained game suit template: " + _suitBaseMat.shader.name);
+                    return;
+                }
+            }
+        }
+
+        private bool MaterialSetNeedsGameShader()
+        {
+            if (!_useGameShader.Value || !IsGameSuitMaterial(_suitBaseMat) || _materials == null)
+                return false;
+            if (_materials.Count != _data.Materials.Count) return true;
+            for (int i = 0; i < _materials.Count; i++)
+                if (!IsGameSuitMaterial(_materials[i])) return true;
+            return false;
+        }
+
+        private void EnsureMaterials(SourceMap sources)
+        {
+            CaptureSuitTemplate(sources);
+            if (_materials != null)
+            {
+                if (!MaterialSetNeedsGameShader()) return;
+                // A preview may have been built before a game template existed.
+                // Keep its decoded textures and alpha classification, but rebuild
+                // its incompatible materials instead of silently adopting Standard.
+                if (_previewSharedAssets) ReleasePreviewModel();
+                for (int i = 0; i < _materials.Count; i++)
+                    if (_materials[i] != null) Destroy(_materials[i]);
+                _materials = null;
+                Logger.LogInfo("Rebuilding donated materials for game alpha/emission support.");
+            }
+
+            Material baseMat = _suitBaseMat;
+            for (int i = 0; i < sources.SuitRenderers.Count; i++)
+            {
+                if (IsGameSuitMaterial(baseMat)) break;
+                if (sources.SuitRenderers[i] == null) continue;
                 Material m = sources.SuitRenderers[i].sharedMaterial;
                 if (m != null)
                 {
@@ -6804,7 +6851,6 @@ namespace MikuPlayerReplacer
             }
 
             _shader = chosen;
-            _suitBaseMat = baseMat;
             Logger.LogInfo(string.Format("Shader: {0} (Standard found={1}, game suit shader={2})",
                 chosen.name, standard != null, baseMat != null ? baseMat.shader.name : "n/a"));
 
@@ -6865,14 +6911,14 @@ namespace MikuPlayerReplacer
                     gotCutout = true;
                 }
                 Logger.LogInfo(string.Format(
-                    "Blend state ({0}){1}: '{2}' queue={3} src={4} dst={5} zwrite={6} cutOff={7} dither={8} keys=[{9}]",
+                    "Blend state ({0}){1}: '{2}' queue={3} src={4} dst={5} zwrite={6} cutOff={7} dither={8} keys=[{9}] shader={10}",
                     modelId, blended ? "" : " cutout", m.name, m.renderQueue,
                     m.HasProperty("_SrcBlend") ? m.GetFloat("_SrcBlend") : -1f,
                     m.HasProperty("_DstBlend") ? m.GetFloat("_DstBlend") : -1f,
                     m.HasProperty("_ZWrite") ? m.GetFloat("_ZWrite") : -1f,
                     m.HasProperty("_EnableCutOff") ? m.GetFloat("_EnableCutOff") : -1f,
                     m.HasProperty("_EnableDitherAlpha") ? m.GetFloat("_EnableDitherAlpha") : -1f,
-                    string.Join(" ", m.shaderKeywords)));
+                    string.Join(" ", m.shaderKeywords), m.shader != null ? m.shader.name : "null"));
                 if (gotBlend && gotCutout)
                 {
                     return;
@@ -17124,6 +17170,8 @@ namespace MikuPlayerReplacer
             // Also destroys the materials, decoded textures and generated meshes; on
             // teardown this keeps a scene reload from stranding a model's worth of VRAM.
             ReleaseModelAssets();
+            if (_suitBaseMat != null) Destroy(_suitBaseMat);
+            _suitBaseMat = null;
             if (_viewProbe != null)
             {
                 Destroy(_viewProbe.gameObject);
