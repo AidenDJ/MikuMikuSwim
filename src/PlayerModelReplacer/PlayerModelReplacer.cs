@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
@@ -16,6 +16,7 @@ namespace MikuPlayerReplacer
     internal sealed class BoneData
     {
         public string Name;
+        public int SecondaryMotion = -1;
         public int Parent;
         public Vector3 LocalPos;
         public Quaternion LocalRot;
@@ -57,6 +58,7 @@ namespace MikuPlayerReplacer
 
     internal sealed class ModelData
     {
+        public bool PreserveYybHairLayout;
         public readonly List<BoneData> Bones = new List<BoneData>();
         public readonly List<MaterialData> Materials = new List<MaterialData>();
         public readonly List<MeshData> Meshes = new List<MeshData>();
@@ -177,7 +179,7 @@ namespace MikuPlayerReplacer
         public const string PluginGuid = "com.miku.subnautica.playerreplacer";
         // MMS = MikuMikuSwim: the mod's short name, also the PDA tab label.
         public const string PluginName = "MMS";
-        public const string PluginVersion = "0.1.15";
+        public const string PluginVersion = "0.1.0";
 
         // ---- configuration ----
         private ConfigEntry<float> _scale;
@@ -781,6 +783,7 @@ namespace MikuPlayerReplacer
             // bone's space (a tie ribbon hangs in front of its bones, a skirt
             // panel outside them). Collision acts on the shell's centre.
             public Vector3[] Shell;
+            public Vector3[] ShellWorld;
             // Bind local rotation of every joint, so the chain can be put back to the
             // authored pose the moment hair physics is switched off.
             public Quaternion[] RestLocalRot;
@@ -4032,6 +4035,17 @@ namespace MikuPlayerReplacer
                     "{3} bones, {4} materials, {5} meshes", entry.PmxPath,
                     pmx.Bones.Count, pmx.Positions.Length, pristine.Bones.Count,
                     pristine.Materials.Count, pristine.Meshes.Count));
+                int hairParts=0, clothParts=0, accessoryParts=0;
+                foreach(BoneData bone in pristine.Bones)
+                {
+                    if(PmxConverter.IsSecondaryHair(bone)) hairParts++;
+                    else if(PmxConverter.IsSecondarySkirt(bone) || PmxConverter.IsSecondaryClothes(bone)) clothParts++;
+                    else if((PmxConverter.MotionKind(bone)&PmxConverter.MotionAccessory)!=0) accessoryParts++;
+                }
+                Logger.LogInfo("Automatic secondary parts: hair="+hairParts+", clothes="+clothParts
+                    +", accessories="+accessoryParts+", native rigid bodies="+pmx.RigidBodies.Count
+                    +", physics metadata="+pmx.PhysicsMetadataAvailable);
+                if(pmx.PhysicsMetadataError!=null) Logger.LogWarning("Optional PMX physics metadata ignored: "+pmx.PhysicsMetadataError);
                 _modelCache[cacheKey] = pristine;
             }
             catch (Exception e)
@@ -4149,6 +4163,7 @@ namespace MikuPlayerReplacer
         private static ModelData CloneModel(ModelData src)
         {
             ModelData dst = new ModelData();
+            dst.PreserveYybHairLayout = src.PreserveYybHairLayout;
             dst.ArmPoseBaked = src.ArmPoseBaked;
             for (int i = 0; i < src.Bones.Count; i++)
             {
@@ -5617,6 +5632,7 @@ namespace MikuPlayerReplacer
         /// </summary>
         private void ApplyPartVisibility()
         {
+            _cinematicArmsDirty = true;
             HashSet<string> set;
             if (!_hiddenByModel.TryGetValue(_currentModelId ?? "", out set))
             {
@@ -8056,24 +8072,7 @@ namespace MikuPlayerReplacer
         /// 髪, ツインテール ...). Used to give imported hair a simulated chain.</summary>
         private bool IsHairMaterialName(string name)
         {
-            if (string.IsNullOrEmpty(name))
-            {
-                return false;
-            }
-            string lower = name.ToLowerInvariant();
-            // Not just "tail": "Detail" would match it. 髪/髮/发 are the Japanese,
-            // traditional and simplified spellings of the same character; the
-            // Chinese-authored models name their hair material 头发/发 and were
-            // otherwise left with no hair rig at all, which also made the hair
-            // invisible in first person.
-            return lower.IndexOf("hair", StringComparison.Ordinal) >= 0 ||
-                   lower.IndexOf("髪", StringComparison.Ordinal) >= 0 ||
-                   lower.IndexOf("髮", StringComparison.Ordinal) >= 0 ||
-                   lower.IndexOf("发", StringComparison.Ordinal) >= 0 ||
-                   lower.IndexOf("ヘア", StringComparison.Ordinal) >= 0 ||
-                   lower.IndexOf("ウィッグ", StringComparison.Ordinal) >= 0 ||
-                   lower.IndexOf("ツインテ", StringComparison.Ordinal) >= 0 ||
-                   lower.IndexOf("ponytail", StringComparison.Ordinal) >= 0;
+            return LongHairGeometry.IsHairMaterialName(name);
         }
 
         private static int BoneIndexOr(Dictionary<string, int> lookup, string name)
@@ -9046,10 +9045,12 @@ namespace MikuPlayerReplacer
             // out, turning physics on needed a full model reload.
             if (_imported)
             {
-                // Imported MMD models usually carry their own hair bone chain;
-                // that one is simulated in place.
+                // Long shells use the reference bundle solver. Native short hair
+                // and fringes retain their existing constrained motion.
+                PrepareStandardLongHair(headIndex);
                 BuildImportedHairRig(bones);
             }
+            else { _standardHairPlan=null; _standardHairBones=null; }
             // Hair that is rigidly skinned to the head (no bones of its own, as
             // in the shipped Miku's twintails) still gets a chain built from the
             // mesh geometry.
@@ -9637,6 +9638,8 @@ namespace MikuPlayerReplacer
 
             try { BuildNeckInterior(); }
             catch (Exception e) { Logger.LogWarning("Could not seal neck interior: " + e.Message); }
+            try { BuildCinematicArms(); }
+            catch (Exception e) { Logger.LogWarning("Could not build cinematic arm protection: " + e.Message); }
             _errorLogged = false;
         }
 
@@ -9745,6 +9748,37 @@ namespace MikuPlayerReplacer
         /// the vertices are sliced by height and each slice's centre becomes a joint, so
         /// the bones follow the authored curve of the hair instead of a straight line.
         /// </summary>
+        private LongHairPlan _standardHairPlan;
+        private bool[] _standardHairBones;
+
+        private void PrepareStandardLongHair(int headIndex)
+        {
+            _standardHairPlan=null; _standardHairBones=null;
+            if(_data.PreserveYybHairLayout || _headBone==null || headIndex<0) return;
+            MeshData md=null;
+            foreach(MeshData mesh in _data.Meshes) if(mesh.Role==MeshData.RoleHead) { md=mesh; break; }
+            if(md==null) return;
+            bool[] hair=LongHairGeometry.HairMask(_data,md,index=>IsHairMaterialName(MaterialName(index)));
+            LongHairPlan plan=LongHairGeometry.Build(md,hair,_armature.InverseTransformPoint(_headBone.position));
+            if(plan.VertexCount==0 || plan.Roots.Length>16) return;
+            _standardHairBones=new bool[_data.Bones.Count];
+            for(int v=0;v<hair.Length;v++)
+            {
+                if(plan.VertexGroup[v]<0) continue;
+                BoneWeight w=md.Weights[v];
+                MarkStandardHairBone(w.boneIndex0,w.weight0); MarkStandardHairBone(w.boneIndex1,w.weight1);
+                MarkStandardHairBone(w.boneIndex2,w.weight2); MarkStandardHairBone(w.boneIndex3,w.weight3);
+                md.Weights[v]=new BoneWeight { boneIndex0=headIndex,weight0=1f };
+            }
+            _standardHairPlan=plan;
+            Logger.LogInfo("YYB reference hair: "+plan.Roots.Length+" bundles, "+plan.VertexCount+" vertices; eight segments per bundle.");
+        }
+        private void MarkStandardHairBone(int index,float weight)
+        {
+            if(weight>.0001f && index>=0 && index<_standardHairBones.Length
+                && PmxConverter.IsSecondaryHair(_data.Bones[index])) _standardHairBones[index]=true;
+        }
+
         private void BuildHairRig(List<Transform> extraBones, Transform headBone, int headIndex)
         {
             if (headBone == null || headIndex < 0)
@@ -9768,6 +9802,8 @@ namespace MikuPlayerReplacer
             }
 
             bool[] hair = new bool[md.Vertices.Length];
+            if(_standardHairPlan!=null)
+                for(int v=0;v<hair.Length;v++) hair[v]=_standardHairPlan.VertexGroup[v]>=0;
             for (int s = 0; s < md.Indices.Length; s++)
             {
                 string matName = MaterialName(md.SubMeshMaterials[s]);
@@ -9788,17 +9824,28 @@ namespace MikuPlayerReplacer
             // Every vertex that belongs to a hair material, before the vertices bound
             // to the model's own hair bones are taken out of the simulated set. The
             // renderer split below works from this copy.
+            bool[] nativeHairBones=null;
+            if(_imported)
+            {
+                nativeHairBones=new bool[_data.Bones.Count];
+                for(int i=0;i<nativeHairBones.Length;i++) nativeHairBones[i]=PmxConverter.IsSecondaryHair(_data.Bones[i]);
+                for(int v=0;v<hair.Length;v++)
+                {
+                    BoneWeight w=md.Weights[v]; float amount=0f;
+                    if(w.boneIndex0>=0 && w.boneIndex0<nativeHairBones.Length && nativeHairBones[w.boneIndex0]) amount+=w.weight0;
+                    if(w.boneIndex1>=0 && w.boneIndex1<nativeHairBones.Length && nativeHairBones[w.boneIndex1]) amount+=w.weight1;
+                    if(w.boneIndex2>=0 && w.boneIndex2<nativeHairBones.Length && nativeHairBones[w.boneIndex2]) amount+=w.weight2;
+                    if(w.boneIndex3>=0 && w.boneIndex3<nativeHairBones.Length && nativeHairBones[w.boneIndex3]) amount+=w.weight3;
+                    if(amount>=0.65f) hair[v]=true;
+                }
+            }
             bool[] allHair = _imported ? (bool[])hair.Clone() : null;
 
             if (_imported)
             {
                 // Vertices already driven by the model's own hair bones keep that
                 // rig; only hair bound rigidly to the head needs one built here.
-                bool[] hairBone = new bool[_data.Bones.Count];
-                for (int i = 0; i < _data.Bones.Count; i++)
-                {
-                    hairBone[i] = PmxConverter.IsHairName(_data.Bones[i].Name);
-                }
+                bool[] hairBone = nativeHairBones;
                 for (int v = 0; v < hair.Length; v++)
                 {
                     if (!hair[v])
@@ -9834,7 +9881,7 @@ namespace MikuPlayerReplacer
                 }
                 for (int s = 0; s < md.Indices.Length; s++)
                 {
-                    if (!IsHairMaterialName(MaterialName(md.SubMeshMaterials[s])))
+                    if (!IsHairMaterialName(MaterialName(md.SubMeshMaterials[s])) && _standardHairPlan==null)
                     {
                         continue;
                     }
@@ -9846,6 +9893,7 @@ namespace MikuPlayerReplacer
                         {
                             continue;
                         }
+                        if(_standardHairPlan!=null && (!allHair[ind[k]] || !allHair[ind[k+1]] || !allHair[ind[k+2]])) continue;
                         UnionRoot(parent, ind[k], ind[k + 1]);
                         UnionRoot(parent, ind[k], ind[k + 2]);
                     }
@@ -10014,6 +10062,8 @@ namespace MikuPlayerReplacer
 
             // More joints than the old five: the tail needs to bend along its length
             // to look like hair, not swing around its root like a stiff plank.
+            if(_standardHairPlan!=null)
+                for(int v=0;v<longVert.Length;v++) longVert[v]=_standardHairPlan.VertexGroup[v]>=0;
             const int Segments = 8;
             const int Bins = Segments + 1;
             // One chain per tail. Three independent ribbon chains used to run down
@@ -10035,9 +10085,10 @@ namespace MikuPlayerReplacer
             // the face, so the renderer has to be split afterwards.
             bool[] clothVerts = _imported ? new bool[md.Vertices.Length] : null;
 
-            for (int side = 0; side < 2; side++)
+            int bundleCount=_standardHairPlan!=null?_standardHairPlan.Roots.Length:2;
+            for (int side = 0; side < bundleCount; side++)
             {
-                float sign = side == 0 ? 1f : -1f;
+                float sign = _standardHairPlan!=null?(_standardHairPlan.Roots[side].x>=0f?1f:-1f):(side == 0 ? 1f : -1f);
                 List<int> tail = new List<int>();
                 float yMin = float.MaxValue;
                 float yMax = float.MinValue;
@@ -10053,7 +10104,7 @@ namespace MikuPlayerReplacer
                         continue;
                     }
                     Vector3 p = md.Vertices[v];
-                    if (p.x * sign <= 0.02f)
+                    if (_standardHairPlan!=null ? _standardHairPlan.VertexGroup[v]!=side : p.x * sign <= 0.02f)
                     {
                         continue;
                     }
@@ -10061,7 +10112,7 @@ namespace MikuPlayerReplacer
                     if (p.y < yMin) yMin = p.y;
                     if (p.y > yMax) yMax = p.y;
                 }
-                if (tail.Count < 100 || yMax - yMin < 0.2f)
+                if (tail.Count < (_standardHairPlan!=null?30:100) || yMax - yMin < 0.2f)
                 {
                     continue;
                 }
@@ -10181,6 +10232,7 @@ namespace MikuPlayerReplacer
                     // A different phase per side, so the two tails do not sway in
                     // lockstep.
                     chain.FlowPhase = (side == 0 ? 0.4f : 2.7f) + s * 1.9f;
+                    if(_standardHairPlan!=null) chain.FlowPhase=.4f+side*2.3f;
                     chain.FlowScale = 0.92f + 0.06f * s;
                     chain.StiffnessScale = 1f - 0.08f * Mathf.Abs(s - 1);
                     chain.Bones = chainBones;
@@ -10960,21 +11012,22 @@ namespace MikuPlayerReplacer
             for (int i = 0; i < n; i++)
             {
                 string name = _data.Bones[i].Name;
-                if (_data.Bones[i].IkControl || !PmxConverter.IsPhysicsChainName(name))
+                if (_data.Bones[i].IkControl || PmxConverter.MotionKind(_data.Bones[i]) == 0
+                    || _standardHairBones!=null && _standardHairBones[i])
                 {
                     continue;
                 }
                 chain[i] = true;
                 chainBones++;
-                if (PmxConverter.IsHairName(name))
+                if (PmxConverter.IsSecondaryHair(_data.Bones[i]))
                 {
                     hairBones++;
                 }
-                else if (PmxConverter.IsSkirtName(name))
+                else if (PmxConverter.IsSecondarySkirt(_data.Bones[i]))
                 {
                     skirtBones++;
                 }
-                else if (PmxConverter.IsClothesName(name))
+                else if (PmxConverter.IsSecondaryClothes(_data.Bones[i]))
                 {
                     clothesBones++;
                 }
@@ -10992,7 +11045,9 @@ namespace MikuPlayerReplacer
                     continue;
                 }
                 int p = _data.Bones[i].Parent;
-                if (p >= 0 && p < n && chain[p])
+                if (p >= 0 && p < n && chain[p]
+                    && (PmxConverter.MotionKind(_data.Bones[p]) & ~PmxConverter.MotionLightHair)
+                        == (PmxConverter.MotionKind(_data.Bones[i]) & ~PmxConverter.MotionLightHair))
                 {
                     if (children[p] == null)
                     {
@@ -11016,7 +11071,9 @@ namespace MikuPlayerReplacer
                 // (its parent is not simulated) or is one of several children of a
                 // branch. Anything else is the middle of an existing strand.
                 int parent = _data.Bones[i].Parent;
-                if (parent >= 0 && parent < n && chain[parent] &&
+                if (parent >= 0 && parent < n && chain[parent]
+                    && (PmxConverter.MotionKind(_data.Bones[parent]) & ~PmxConverter.MotionLightHair)
+                        == (PmxConverter.MotionKind(_data.Bones[i]) & ~PmxConverter.MotionLightHair) &&
                     ChainChildren(children[parent], chain) < 2)
                 {
                     continue;
@@ -11053,7 +11110,7 @@ namespace MikuPlayerReplacer
                     {
                         lightMade++;
                     }
-                    else if (PmxConverter.IsSkirtName(_data.Bones[strand[0]].Name))
+                    else if (PmxConverter.IsSecondarySkirt(_data.Bones[strand[0]]))
                     {
                         skirtMade++;
                     }
@@ -11149,11 +11206,11 @@ namespace MikuPlayerReplacer
             //    unless it is long enough to be a real tail. Scalp hair is left
             //    rigid - if it is bound to the solver it crawls over the skull.
             string rootName = _data.Bones[chain[0]].Name;
-            bool hair = PmxConverter.IsHairName(rootName);
-            bool skirt = PmxConverter.IsSkirtName(rootName);
+            bool hair = PmxConverter.IsSecondaryHair(_data.Bones[chain[0]]);
+            bool skirt = PmxConverter.IsSecondarySkirt(_data.Bones[chain[0]]);
             // Checked after the skirt: "petticoat" contains "coat".
-            bool clothes = !hair && !skirt && PmxConverter.IsClothesName(rootName);
-            light = hair && PmxConverter.IsLightHairName(rootName);
+            bool clothes = !hair && !skirt && PmxConverter.IsSecondaryClothes(_data.Bones[chain[0]]);
+            light = hair && (PmxConverter.MotionKind(_data.Bones[chain[0]]) & PmxConverter.MotionLightHair) != 0;
             float minTotal = hair ? (light ? 0.03f : 0.12f) : 0.02f;
             if (total < minTotal)
             {
@@ -11345,6 +11402,7 @@ namespace MikuPlayerReplacer
         private sealed class BodySlices
         {
             public Transform Bone;
+            public ClothCollisionPose Pose;
             public Vector3[] Frames; // per slice centre (x, y, z), bone space
             public Vector2[] Radii;  // per slice (rx, rz), bone space
             public float Y0;         // bone space, bottom edge of the span
@@ -11957,12 +12015,13 @@ namespace MikuPlayerReplacer
             for (int i = 0; i < _bodySlices.Count; i++)
             {
                 BodySlices s = _bodySlices[i];
-                if (!s.Leg || s.Bone == null)
+                s.Pose = ClothCollisionPose.Capture(s.Bone);
+                if (!s.Leg || !s.Pose.Valid)
                 {
                     s.MotionPad = 0f;
                     continue;
                 }
-                Vector3 p = s.Bone.position;
+                Vector3 p = s.Pose.Origin;
                 if (!s.HasLastPos)
                 {
                     s.LastPos = p;
@@ -12191,13 +12250,21 @@ namespace MikuPlayerReplacer
         // Offset of the visible shell centre from a joint, in world space.
         private static Vector3 ShellOffset(ClothChain ch, int boneIndex)
         {
-            if (ch.Shell == null || ch.Shell.Length <= boneIndex)
+            return ch.ShellWorld != null && boneIndex < ch.ShellWorld.Length
+                ? ch.ShellWorld[boneIndex] : Vector3.zero;
+        }
+
+        private static void PrepareShellOffsets(ClothChain ch)
+        {
+            int count = ch.Shell != null ? ch.Shell.Length : 0;
+            if (count == 0) return;
+            if (ch.ShellWorld == null || ch.ShellWorld.Length != count)
+                ch.ShellWorld = new Vector3[count];
+            for (int i = 0; i < count; i++)
             {
-                return Vector3.zero;
+                Transform bone = ch.Bones != null && i < ch.Bones.Length ? ch.Bones[i] : null;
+                ch.ShellWorld[i] = bone != null ? bone.rotation * ch.Shell[i] : ch.Shell[i];
             }
-            Transform jb = ch.Bones != null && boneIndex < ch.Bones.Length
-                ? ch.Bones[boneIndex] : null;
-            return jb != null ? jb.rotation * ch.Shell[boneIndex] : ch.Shell[boneIndex];
         }
 
         // How thick the cloth shell is around a joint. The joints are pushed, the
@@ -12267,7 +12334,7 @@ namespace MikuPlayerReplacer
             for (int e = 0; e < _bodySlices.Count; e++)
             {
                 BodySlices el = _bodySlices[e];
-                if (el.Bone == null || el.Bound <= 0f)
+                if (!el.Pose.Valid || el.Bound <= 0f)
                 {
                     continue;
                 }
@@ -12287,7 +12354,7 @@ namespace MikuPlayerReplacer
                     continue;
                 }
                 // Cheap rejection: the stack cannot reach this sample.
-                if ((sample - el.Bone.position).sqrMagnitude > el.Bound * el.Bound)
+                if ((sample - el.Pose.Origin).sqrMagnitude > el.Bound * el.Bound)
                 {
                     continue;
                 }
@@ -12304,11 +12371,11 @@ namespace MikuPlayerReplacer
         private void PushOutOfSlices(ClothChain ch, int i, BodySlices el,
             float pad, ref Vector3 sample)
         {
-            if (el.Bone == null || el.Frames == null || el.Frames.Length == 0)
+            if (!el.Pose.Valid || el.Frames == null || el.Frames.Length == 0)
             {
                 return;
             }
-            Vector3 local = el.Bone.InverseTransformPoint(sample);
+            Vector3 local = el.Pose.ToLocal(sample);
             float margin = pad;
             if (el.Leg && ch.Cloth)
             {
@@ -12319,7 +12386,7 @@ namespace MikuPlayerReplacer
                 margin += el.MotionPad;
             }
             // The radii are in bone space; the clearance is in world metres.
-            float scale = el.Bone.lossyScale.x;
+            float scale = el.Pose.Scale;
             if (scale > 1e-4f)
             {
                 margin /= scale;
@@ -12397,7 +12464,7 @@ namespace MikuPlayerReplacer
                     && ch.Root != null
                     ? ch.Root.TransformPoint(ch.RestLocal[i]) - sample
                     : Vector3.zero;
-                Vector3 ld = el.Bone.InverseTransformDirection(rest);
+                Vector3 ld = el.Pose.DirectionToLocal(rest);
                 float lu = Mathf.Sqrt((ld.x / rx) * (ld.x / rx)
                     + (ld.z / rz) * (ld.z / rz));
                 if (lu < 1e-4f)
@@ -12412,7 +12479,7 @@ namespace MikuPlayerReplacer
                 }
             }
             local = new Vector3(cx + nx * rx, local.y, cz + nz * rz);
-            sample = el.Bone.TransformPoint(local);
+            sample = el.Pose.ToWorld(local);
         }
 
         // Ocean surface height in world space, cached for the frame. NaN when no
@@ -12810,6 +12877,7 @@ namespace MikuPlayerReplacer
                 bool collide = !ch.Light && (ch.Skirt ? skirtOn : hairCollide);
                 if (collide && (_colliders.Count > 0 || _bodySlices.Count > 0))
                 {
+                    PrepareShellOffsets(ch);
                     // Two rounds: pushing one joint out of a leg pulls its neighbour
                     // back in through the length constraint, and one pass left the
                     // next panel just inside the thigh. Skirt and coat panels get a

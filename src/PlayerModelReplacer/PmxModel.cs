@@ -9,9 +9,8 @@ namespace MikuPlayerReplacer
     // ----------------------------------------------------------------------
     // PMX 2.0 / 2.1 reader
     //
-    // Only what the runtime model needs is parsed: header, vertices, faces,
-    // textures, materials and bones. Morphs, display frames, rigid bodies and
-    // joints live after the bone block, so parsing stops there.
+    // Geometry and skeleton plus optional native physics metadata. Morphs and
+    // display frames are skipped to reach rigid bodies and joint connections.
     // ----------------------------------------------------------------------
 
     internal sealed class PmxBone
@@ -34,6 +33,7 @@ namespace MikuPlayerReplacer
     internal sealed class PmxMaterial
     {
         public string Name;
+        public string EnglishName;
         public string Texture;
         public bool NoCull;
         public float Alpha = 1f;
@@ -53,6 +53,17 @@ namespace MikuPlayerReplacer
         public int[][] VertexBones;
         public float[][] VertexWeights;
         public int[] Indices;
+        public readonly List<PmxRigidBody> RigidBodies = new List<PmxRigidBody>();
+        public bool PhysicsMetadataAvailable;
+        public string PhysicsMetadataError;
+        public long PhysicsMetadataOffset;
+    }
+
+    internal sealed class PmxRigidBody
+    {
+        public string Name, EnglishName;
+        public int Bone, Mode;
+        public bool HasJoint;
     }
 
     // PMX texture references are relative to the model file, but exporters
@@ -136,8 +147,9 @@ namespace MikuPlayerReplacer
                 int textureIndexSize = br.ReadByte();
                 int materialIndexSize = br.ReadByte();
                 int boneIndexSize = br.ReadByte();
-                br.ReadByte(); // morph index size
-                br.ReadByte(); // rigid body index size
+                int morphIndexSize = br.ReadByte();
+                int rigidIndexSize = br.ReadByte();
+                if (globals > 8) br.ReadBytes(globals - 8);
                 // PMX 2.1 adds a few more global bytes; they are unused here.
 
                 PmxData data = new PmxData();
@@ -259,7 +271,7 @@ namespace MikuPlayerReplacer
                 {
                     PmxMaterial m = new PmxMaterial();
                     m.Name = ReadText(br, utf8);
-                    ReadText(br, utf8); // english name
+                    m.EnglishName = ReadText(br, utf8);
                     br.ReadBytes(16 + 12 + 4 + 12); // diffuse, specular, strength, ambient
                     byte flags = br.ReadByte();
                     m.NoCull = (flags & 1) != 0;
@@ -285,7 +297,7 @@ namespace MikuPlayerReplacer
                     data.Materials.Add(m);
                 }
 
-                // ---- bones (stop here)
+                // ---- bones
                 int boneCount = br.ReadInt32();
                 for (int i = 0; i < boneCount; i++)
                 {
@@ -342,8 +354,87 @@ namespace MikuPlayerReplacer
                     data.Bones.Add(b);
                 }
 
+                data.PhysicsMetadataOffset=br.BaseStream.Position;
+                ReadPhysicsMetadata(br, data, utf8, vertexIndexSize, materialIndexSize,
+                    boneIndexSize, morphIndexSize, rigidIndexSize);
                 return data;
             }
+        }
+
+        private static int MetadataCount(BinaryReader br)
+        {
+            int n=br.ReadInt32();
+            if(n<0 || n>1000000) throw new InvalidDataException("Invalid optional metadata count");
+            return n;
+        }
+        private static string MetadataText(BinaryReader br,bool utf8)
+        {
+            int bytes=br.ReadInt32();
+            if(bytes<0 || bytes>1048576 || bytes>br.BaseStream.Length-br.BaseStream.Position)
+                throw new InvalidDataException("Invalid optional metadata text length");
+            return (utf8?Encoding.UTF8:Encoding.Unicode).GetString(br.ReadBytes(bytes));
+        }
+        private static void SkipMetadata(BinaryReader br, long bytes)
+        {
+            if(bytes<0 || bytes>br.BaseStream.Length-br.BaseStream.Position) throw new EndOfStreamException();
+            br.BaseStream.Seek(bytes,SeekOrigin.Current);
+        }
+        private static void ReadPhysicsMetadata(BinaryReader br, PmxData data, bool utf8,
+            int vertexSize, int materialSize, int boneSize, int morphSize, int rigidSize)
+        {
+            if(br.BaseStream.Position==br.BaseStream.Length) return;
+            // Optional metadata must never make an otherwise usable mesh unloadable.
+            try
+            {
+                int morphs=MetadataCount(br);
+                for(int i=0;i<morphs;i++)
+                {
+                    MetadataText(br,utf8); MetadataText(br,utf8); br.ReadByte(); int type=br.ReadByte();
+                    int entries=MetadataCount(br), size;
+                    if(type==0 || type==9) size=morphSize+4;
+                    else if(type==1) size=vertexSize+12;
+                    else if(type==2) size=boneSize+28;
+                    else if(type>=3 && type<=7) size=vertexSize+16;
+                    else if(type==8) size=materialSize+113;
+                    else if(type==10) size=rigidSize+25;
+                    else throw new InvalidDataException("Unknown morph type " + type);
+                    SkipMetadata(br,(long)size*entries);
+                }
+                int frames=MetadataCount(br);
+                for(int i=0;i<frames;i++)
+                {
+                    MetadataText(br,utf8); MetadataText(br,utf8); br.ReadByte(); int entries=MetadataCount(br);
+                    for(int j=0;j<entries;j++)
+                    {
+                        int type=br.ReadByte();
+                        if(type>1) throw new InvalidDataException("Invalid display frame type");
+                        SkipMetadata(br,type==0?boneSize:morphSize);
+                    }
+                }
+                List<PmxRigidBody> bodies=new List<PmxRigidBody>();
+                int count=MetadataCount(br);
+                for(int i=0;i<count;i++)
+                {
+                    PmxRigidBody body=new PmxRigidBody();
+                    body.Name=MetadataText(br,utf8); body.EnglishName=MetadataText(br,utf8);
+                    body.Bone=ReadIndex(br,boneSize); SkipMetadata(br,60); body.Mode=br.ReadByte();
+                    if(body.Mode>2) throw new InvalidDataException("Invalid rigid body mode");
+                    bodies.Add(body);
+                }
+                int joints=MetadataCount(br);
+                for(int i=0;i<joints;i++)
+                {
+                    MetadataText(br,utf8); MetadataText(br,utf8); int type=br.ReadByte();
+                    if(type>5) throw new InvalidDataException("Unknown joint type");
+                    int a=ReadIndex(br,rigidSize), b=ReadIndex(br,rigidSize);
+                    SkipMetadata(br,96);
+                    if(a>=0 && a<bodies.Count) bodies[a].HasJoint=true;
+                    if(b>=0 && b<bodies.Count) bodies[b].HasJoint=true;
+                }
+                data.RigidBodies.AddRange(bodies); data.PhysicsMetadataAvailable=true;
+            }
+            catch(EndOfStreamException error) { data.PhysicsMetadataError=error.Message; }
+            catch(InvalidDataException error) { data.PhysicsMetadataError=error.Message; }
         }
 
         private static string ReadText(BinaryReader br, bool utf8)
@@ -626,7 +717,8 @@ namespace MikuPlayerReplacer
         {
             "髪", "髮", "ヘア", "hair", "ツインテ", "twin", "テール", "tail", "三つ編",
             "braid", "リボン", "ribbon", "アホ毛", "もみあげ", "ポニー", "ponytail",
-            "ウィッグ", "wig"
+            "ウィッグ", "wig", "头发", "頭髮", "前发", "后发", "後髮", "侧发",
+            "发絮", "发毛", "马尾", "馬尾", "maegami", "fringe", "bangs"
         };
 
         // Hair that may drift a little but must never flap: the fringe in front of
@@ -635,7 +727,7 @@ namespace MikuPlayerReplacer
         private static readonly string[] LightHairKeywords =
         {
             "前髪", "前髮", "前发", "刘海", "もみあげ", "横髪", "横髮", "側髪", "側髮",
-            "サイド", "鬓角", "鬢角", "アホ毛", "ahoge"
+            "サイド", "鬓角", "鬢角", "アホ毛", "ahoge", "maegami", "fringe", "bangs"
         };
 
         // Long, thin accessories that hang from the body. They are simulated with
@@ -658,6 +750,219 @@ namespace MikuPlayerReplacer
             "スカート", "skirt", "裙", "ペチコート", "petticoat", "フリル", "frill"
         };
 
+        public const int MotionHair = 1, MotionLightHair = 2, MotionSkirt = 4,
+            MotionClothes = 8, MotionAccessory = 16;
+
+        private static int ClassifyMotionName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return 0;
+            // Fabric names win over incidental "hair" in imported cloth labels.
+            if (IsSkirtName(name)) return MotionSkirt;
+            if (IsClothesName(name)) return MotionClothes;
+            if (name.Contains("飘带") || name.Contains("飄帶") || name.Contains("项圈带")
+                || name.Contains("尾巴") || name.Contains("兔耳") || name.Contains("蝴蝶结")) return MotionAccessory;
+            if (IsHairName(name)) return MotionHair | (IsLightHairName(name) ? MotionLightHair : 0);
+            return IsPhysicsChainName(name) ? MotionAccessory : 0;
+        }
+        public static int MotionKind(BoneData bone)
+        { return bone.SecondaryMotion >= 0 ? bone.SecondaryMotion : ClassifyMotionName(bone.Name); }
+        public static bool IsSecondaryHair(BoneData bone) { return (MotionKind(bone) & MotionHair) != 0; }
+        public static bool IsSecondarySkirt(BoneData bone) { return (MotionKind(bone) & MotionSkirt) != 0; }
+        public static bool IsSecondaryClothes(BoneData bone) { return (MotionKind(bone) & MotionClothes) != 0; }
+
+        private static int ResolveMotionKind(PmxData source, int index, int[] kinds, byte[] state, List<int>[] children)
+        {
+            if (state[index] == 2) return kinds[index];
+            if (state[index] == 1) return 0; // Invalid parent cycles do not recurse forever.
+            state[index] = 1;
+            PmxBone bone = source.Bones[index];
+            int kind = 0;
+            if (!bone.Ik && MapBone(bone.Name) == null && FoldTarget(bone.Name) == null
+                && (bone.Name == null || !bone.Name.Contains("固定")))
+            {
+                kind = ClassifyMotionName(bone.Name);
+                if (kind == 0) kind = ClassifyMotionName(bone.EnglishName);
+                // A long hanging sleeve can have only the generic name 袖.
+                // Keep short fitted cuffs on the existing limb-folding path.
+                if (kind == 0 && bone.Name != null && bone.Name.StartsWith("袖", StringComparison.Ordinal))
+                {
+                    int current=index, links=0;
+                    while (links<4 && children[current]!=null && children[current].Count==1)
+                    { current=children[current][0]; links++; }
+                    if (links>=4) kind=MotionClothes;
+                }
+                if (bone.Parent >= 0 && bone.Parent < kinds.Length)
+                {
+                    int parentKind=ResolveMotionKind(source,bone.Parent,kinds,state,children);
+                    // Exporters insert untranslated intermediate/end bones. Their
+                    // simulated type follows the chain, without renaming the bone.
+                    if (kind==0) kind=parentKind;
+                    if ((parentKind & MotionClothes)!=0 && bone.Name!=null && bone.Name.Contains("袖")) kind=MotionClothes;
+                }
+            }
+            kinds[index]=kind; state[index]=2; return kind;
+        }
+
+        public static int[] ClassifySecondaryMotion(PmxData source)
+        {
+            int count=source.Bones.Count;
+            int[] kinds=new int[count]; byte[] state=new byte[count];
+            List<int>[] children=new List<int>[count];
+            for(int i=0;i<count;i++)
+            {
+                int parent=source.Bones[i].Parent;
+                if(parent<0 || parent>=count) continue;
+                if(children[parent]==null) children[parent]=new List<int>();
+                children[parent].Add(i);
+            }
+            for(int i=0;i<count;i++) ResolveMotionKind(source,i,kinds,state,children);
+            int[] authoredHair = null;
+            // Existing YYB rigs already use the stable mesh-derived ponytail
+            // solver. Extra helper bones inferred from materials/physics must
+            // not replace that binding with several independently curling chains.
+            if((source.Name ?? "").IndexOf("YYB",StringComparison.OrdinalIgnoreCase)>=0)
+                for(int i=0;i<count;i++)
+                    if((kinds[i]&MotionHair)!=0) { authoredHair=(int[])kinds.Clone(); break; }
+            InferSecondaryMotion(source,kinds,children);
+            if(authoredHair!=null)
+                for(int i=0;i<count;i++)
+                    if(authoredHair[i]==0 && (kinds[i]&MotionHair)!=0) kinds[i]=0;
+            return kinds;
+        }
+
+        private static readonly string[] InferenceExcludedNames={"固定","eye","mouth","jaw","teeth","tongue","brow","breast","bust","butt","目","口","舌","歯","眉","胸","臀"};
+        private static readonly string[] GarmentMaterialNames={"cloth","dress","fabric","sleeve","garment","衣服","衣装","布料","着物","ワンピース"};
+        private static bool CanInferMotion(PmxBone bone)
+        {
+            if(bone.Ik || MapBone(bone.Name)!=null || MapBone(bone.EnglishName)!=null || FoldTarget(bone.Name)!=null) return false;
+            string label=(bone.Name+" "+bone.EnglishName).ToLowerInvariant();
+            return !ContainsKeyword(label,InferenceExcludedNames);
+        }
+        private static int MaterialMotionKind(PmxMaterial material)
+        {
+            int kind=ClassifyMotionName(material.Name);
+            if(kind==0) kind=ClassifyMotionName(material.EnglishName);
+            if(kind==0) kind=ClassifyMotionName(TexturePaths.BaseName(material.Texture ?? ""));
+            string label=(material.Name+" "+material.EnglishName+" "+material.Texture).ToLowerInvariant();
+            if(kind==0 && ContainsKeyword(label,GarmentMaterialNames)) kind=MotionClothes;
+            return kind;
+        }
+        private static string Attachment(PmxData source,int bone)
+        {
+            for(int guard=0;bone>=0 && bone<source.Bones.Count && guard<source.Bones.Count;guard++)
+            {
+                string mapped=MapBone(source.Bones[bone].Name) ?? MapBone(source.Bones[bone].EnglishName);
+                if(mapped!=null) return mapped;
+                bone=source.Bones[bone].Parent;
+            }
+            return null;
+        }
+        private static void InferSecondaryMotion(PmxData source,int[] kinds,List<int>[] children)
+        {
+            int n=kinds.Length;
+            float[] total=new float[n], hair=new float[n], skirt=new float[n], clothes=new float[n], accessory=new float[n];
+            bool[] dynamic=new bool[n], anchored=new bool[n];
+            int[] physicalName=new int[n];
+            foreach(PmxRigidBody body in source.RigidBodies)
+            {
+                if(body.Bone<0 || body.Bone>=n) continue;
+                if(body.Mode==0) anchored[body.Bone]=true;
+                else if(body.HasJoint)
+                {
+                    dynamic[body.Bone]=true;
+                    physicalName[body.Bone]=ClassifyMotionName(body.Name);
+                    if(physicalName[body.Bone]==0) physicalName[body.Bone]=ClassifyMotionName(body.EnglishName);
+                }
+            }
+            if(source.Positions==null || source.VertexBones==null || source.VertexWeights==null || source.Indices==null) return;
+            int[] stamps=new int[source.Positions.Length]; int cursor=0;
+            for(int m=0;m<source.Materials.Count;m++)
+            {
+                PmxMaterial material=source.Materials[m]; int kind=MaterialMotionKind(material);
+                int end=(int)Math.Min(source.Indices.Length,(long)cursor+Math.Max(0,material.SurfaceCount));
+                for(int at=cursor;at<end;at++)
+                {
+                    int v=source.Indices[at];
+                    if(v<0 || v>=stamps.Length || stamps[v]==m+1) continue;
+                    stamps[v]=m+1;
+                    for(int k=0;k<4;k++)
+                    {
+                        int b=source.VertexBones[v][k]; float w=source.VertexWeights[v][k];
+                        if(b<0 || b>=n || w<=0f) continue;
+                        total[b]+=w;
+                        if((kind&MotionHair)!=0) hair[b]+=w;
+                        if((kind&MotionSkirt)!=0) skirt[b]+=w;
+                        if((kind&MotionClothes)!=0) clothes[b]+=w;
+                        if((kind&MotionAccessory)!=0) accessory[b]+=w;
+                    }
+                }
+                cursor=end;
+            }
+            float lo=float.MaxValue, hi=float.MinValue, hips=0f;
+            Vector3 head=Vector3.zero; bool hasHead=false;
+            foreach(Vector3 position in source.Positions) { lo=Math.Min(lo,position.y); hi=Math.Max(hi,position.y); }
+            float height=Math.Max(hi-lo,0.001f);
+            for(int i=0;i<n;i++)
+                if(MapBone(source.Bones[i].Name)=="hips" || MapBone(source.Bones[i].Name)=="lower_body") { hips=source.Bones[i].Position.y; break; }
+            for(int i=0;i<n;i++)
+                if(MapBone(source.Bones[i].Name)=="head_rig") { head=source.Bones[i].Position; hasHead=true; break; }
+            for(int i=0;i<n;i++)
+            {
+                if(kinds[i]!=0 || !CanInferMotion(source.Bones[i]) || total[i]<0.05f) continue;
+                int kind=0; float required=total[i]*0.65f;
+                if(hair[i]>=required) kind=MotionHair;
+                else if(skirt[i]>=required) kind=MotionSkirt;
+                else if(clothes[i]>=required) kind=MotionClothes;
+                else if(accessory[i]>=required) kind=MotionAccessory;
+                bool hasChain=children[i]!=null && children[i].Count>0;
+                if(kind!=0 && kind!=MotionHair && (!hasChain && !dynamic[i] || anchored[i] && !dynamic[i])) kind=0;
+                if(kind==0 && dynamic[i]) kind=physicalName[i];
+                if(kind==0 && dynamic[i])
+                {
+                    // Anonymous physical chains: use body attachment and reach,
+                    // never a spatial guess on an isolated chest/face joint.
+                    int links=1,current=i; Vector3 start=source.Bones[i].Position;
+                    float reach=0f,minY=start.y;
+                    while(links<64 && children[current]!=null && children[current].Count==1)
+                    {
+                        int child=children[current][0];
+                        if(!CanInferMotion(source.Bones[child])) break;
+                        Vector3 pos=source.Bones[child].Position;
+                        Vector3 delta=pos-start;
+                        float distance=(float)Math.Sqrt(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z);
+                        reach=Math.Max(reach,distance); minY=Math.Min(minY,pos.y);
+                        current=child; links++;
+                    }
+                    string attachment=Attachment(source,source.Bones[i].Parent);
+                    Vector3 toHead=start-head;
+                    bool nearHead=hasHead && toHead.sqrMagnitude<height*height*0.0225f
+                        && (attachment==null || attachment.StartsWith("miku_",StringComparison.Ordinal));
+                    if((attachment=="head_rig" || nearHead) && links>=2 && reach>=height*0.05f)
+                        kind=MotionHair | (reach<height*0.14f?MotionLightHair:0);
+                    else if(links>=3 && reach>=height*0.05f && (attachment=="hips" || attachment=="lower_body") && minY<hips-height*0.02f)
+                        kind=MotionSkirt;
+                    else if(links>=3 && reach>=height*0.06f && attachment!=null
+                        && ((attachment.StartsWith("spine",StringComparison.Ordinal) || attachment=="chest") && minY<hips
+                            || attachment.StartsWith("arm_",StringComparison.Ordinal)
+                            || attachment.StartsWith("forearm_",StringComparison.Ordinal))) kind=MotionClothes;
+                }
+                kinds[i]=kind;
+            }
+            // Forward traversal fills anonymous bridge/tip nodes only after a
+            // confident seed. Body controls and explicitly fixed anchors stop it.
+            Queue<int> pending=new Queue<int>();
+            for(int i=0;i<n;i++) if(kinds[i]!=0) pending.Enqueue(i);
+            while(pending.Count>0)
+            {
+                int parent=pending.Dequeue(); if(children[parent]==null) continue;
+                foreach(int child in children[parent])
+                {
+                    if(kinds[child]!=0 || !CanInferMotion(source.Bones[child]) || anchored[child] && !dynamic[child]) continue;
+                    kinds[child]=kinds[parent]; pending.Enqueue(child);
+                }
+            }
+        }
+
         private static bool ContainsKeyword(string lower, string[] keywords)
         {
             for (int i = 0; i < keywords.Length; i++)
@@ -677,7 +982,14 @@ namespace MikuPlayerReplacer
             {
                 return false;
             }
-            return ContainsKeyword(name.ToLowerInvariant(), HairKeywords);
+            if (ContainsKeyword(name.ToLowerInvariant(), HairKeywords)) return true;
+            // Chinese numbered chains: 发1 / 发A2, without matching 发射器.
+            string value = name.TrimStart('左', '右');
+            if (value.Length < 2 || value[0] != '发') return false;
+            for (int i=1;i<value.Length;i++)
+                if (!char.IsDigit(value[i]) && !(value[i]>='A' && value[i]<='Z')
+                    && !(value[i]>='a' && value[i]<='z') && value[i]!='_' && value[i]!='.') return false;
+            return true;
         }
 
         /// <summary>Fringe or sideburn hair: it is simulated with a much stiffer,
@@ -699,7 +1011,7 @@ namespace MikuPlayerReplacer
         private static readonly string[] ClothesKeywords =
         {
             "ケープ", "cape", "マント", "mantle", "コート", "coat", "ローブ", "robe",
-            "ジャケット", "jacket", "上着", "外套", "披风", "斗篷"
+            "ジャケット", "jacket", "上着", "外套", "披风", "斗篷", "长袖", "長袖", "袖摆", "袖擺", "振袖"
         };
 
         /// <summary>A skirt or petticoat panel chain. These swing like the hair, but
@@ -734,7 +1046,7 @@ namespace MikuPlayerReplacer
                 return false;
             }
             string lower = name.ToLowerInvariant();
-            if (IsHairName(lower) || ContainsKeyword(lower, ChainKeywords))
+            if (IsHairName(lower) || IsSkirtName(lower) || IsClothesName(lower) || ContainsKeyword(lower, ChainKeywords))
             {
                 return true;
             }
@@ -887,9 +1199,10 @@ namespace MikuPlayerReplacer
             // at rest the two are identical, so the mesh is unchanged, and none of
             // them are animated anyway.
             bool[] keep = new bool[boneCount];
+            int[] secondaryMotion = ClassifySecondaryMotion(src);
             for (int i = 0; i < boneCount; i++)
             {
-                if (mapped[i] != null || (!src.Bones[i].Ik && IsPhysicsChainName(src.Bones[i].Name))
+                if (mapped[i] != null || secondaryMotion[i] != 0
                     || IsTwistHelperName(src.Bones[i].Name))
                 {
                     keep[i] = true;
@@ -1057,6 +1370,7 @@ namespace MikuPlayerReplacer
             }
 
             ModelData model = new ModelData();
+            model.PreserveYybHairLayout=(src.Name ?? "").IndexOf("YYB",StringComparison.OrdinalIgnoreCase)>=0;
             HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
             for (int n = 0; n < order.Count; n++)
             {
@@ -1081,6 +1395,7 @@ namespace MikuPlayerReplacer
                     }
                 }
                 b.Name = boneName;
+                b.SecondaryMotion = secondaryMotion[i];
                 b.IkControl = pb.Ik;
 
                 int newParent = -1;
@@ -1174,7 +1489,7 @@ namespace MikuPlayerReplacer
                     // Face bones (eyes, jaw, ...) belong to the head mesh. Imported
                     // hair goes there too: a fringe hanging in front of the face would
                     // otherwise stay visible (and block the camera) in first person.
-                    if (IsHairName(src.Bones[i].Name))
+                    if ((secondaryMotion[i] & MotionHair) != 0)
                     {
                         headBones[i] = true;
                         continue;

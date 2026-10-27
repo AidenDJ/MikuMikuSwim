@@ -10,16 +10,77 @@ namespace MikuPlayerReplacer
         private Quaternion _cinematicHeadRest;
         private bool _cinematicBodyHidden;
         private ShadowCastingMode _cinematicBodyShadow;
+        private SkinnedMeshRenderer _cinematicArms;
+        private Mesh _cinematicArmsMesh;
+        private float[] _cinematicArmInfluence;
+        private bool _cinematicArmsDirty;
         private SkinnedMeshRenderer _neckInterior;
         private readonly System.Collections.Generic.List<Material> _neckInteriorMaterials =
             new System.Collections.Generic.List<Material>();
 
         private void ReleaseNeckInterior()
         {
+            if (_cinematicArms != null) Destroy(_cinematicArms.gameObject);
+            if (_cinematicArmsMesh != null) Destroy(_cinematicArmsMesh);
+            _cinematicArms = null;
+            _cinematicArmsMesh = null;
+            _cinematicArmInfluence = null;
             _neckInterior = null;
             foreach (Material material in _neckInteriorMaterials)
                 if (material != null) Destroy(material);
             _neckInteriorMaterials.Clear();
+        }
+
+        private void BuildCinematicArms()
+        {
+            if (_bodyRenderer == null || _bodyRenderer.sharedMesh == null) return;
+            Transform[] bones = _bodyRenderer.bones;
+            int[] parents = new int[bones.Length];
+            string[] names = new string[bones.Length];
+            for (int i = 0; i < bones.Length; i++)
+            {
+                parents[i] = bones[i] == null ? -1 : System.Array.IndexOf(bones, bones[i].parent);
+                names[i] = bones[i] == null ? "" : bones[i].name;
+            }
+            _cinematicArmInfluence = CinematicArmGeometry.Influence(
+                _bodyRenderer.sharedMesh.boneWeights, CinematicArmGeometry.ArmBones(parents, names));
+            _cinematicArmsMesh = Instantiate(_bodyRenderer.sharedMesh);
+            _cinematicArmsMesh.name = "Miku_CinematicArms";
+            GameObject go = new GameObject("Miku_CinematicArms");
+            go.layer = _bodyRenderer.gameObject.layer;
+            go.transform.SetParent(_bodyRenderer.transform, false);
+            _cinematicArms = go.AddComponent<SkinnedMeshRenderer>();
+            _cinematicArms.sharedMesh = _cinematicArmsMesh;
+            _cinematicArms.bones = bones;
+            _cinematicArms.rootBone = _bodyRenderer.rootBone;
+            _cinematicArms.sharedMaterials = _bodyRenderer.sharedMaterials;
+            _cinematicArms.localBounds = _bodyRenderer.localBounds;
+            _cinematicArms.updateWhenOffscreen = true;
+            // The original body continues to cast the complete shadow.
+            _cinematicArms.shadowCastingMode = ShadowCastingMode.Off;
+            _cinematicArms.receiveShadows = _bodyRenderer.receiveShadows;
+            _cinematicArms.enabled = false;
+            RefreshCinematicArms();
+            SkyApplier sky = _container.GetComponent<SkyApplier>();
+            if (sky != null)
+            {
+                var lit = new System.Collections.Generic.List<Renderer>(sky.renderers);
+                lit.Add(_cinematicArms);
+                sky.renderers = lit.ToArray();
+                if (Player.main != null)
+                    SkyEnvironmentChanged.Send(_container.gameObject, Player.main.GetSkyEnvironment());
+            }
+            Logger.LogInfo("Cinematic arm visibility protection ready (0.1.0 fix).");
+        }
+
+        private void RefreshCinematicArms()
+        {
+            if (_cinematicArmsMesh == null || _bodyRenderer == null) return;
+            Mesh source = _bodyRenderer.sharedMesh;
+            for (int i = 0; i < source.subMeshCount; i++)
+                _cinematicArmsMesh.SetTriangles(CinematicArmGeometry.Select(
+                    source.GetTriangles(i), _cinematicArmInfluence), i, false);
+            _cinematicArmsDirty = false;
         }
 
         private void BuildNeckInterior()
@@ -201,14 +262,25 @@ namespace MikuPlayerReplacer
             // Interior protection belongs to the skull renderer, not the hair.
             if (cinematic && _hairRenderer != null)
             {
-                _hairRenderer.enabled = true;
-                _hairRenderer.shadowCastingMode = ShadowCastingMode.On;
+                if (!_hairRenderer.enabled) _hairRenderer.enabled = true;
+                if (_hairRenderer.shadowCastingMode != ShadowCastingMode.On)
+                    _hairRenderer.shadowCastingMode = ShadowCastingMode.On;
             }
 
             bool hideBody = cam != null && first && cinematic && _hideHead.Value
                 && CameraTouchesTorso(cam, pad);
+            if (_cinematicArms != null)
+            {
+                if (hideBody && _cinematicArmsDirty) RefreshCinematicArms();
+                // Only draw this subset while the normal body is shadows-only;
+                // rendering both would double transparent sleeve materials.
+                if (_cinematicArms.enabled != hideBody) _cinematicArms.enabled = hideBody;
+            }
             if (_neckInterior != null)
-                _neckInterior.enabled = first && hide && !hideBody;
+            {
+                bool showInterior = first && hide && !hideBody;
+                if (_neckInterior.enabled != showInterior) _neckInterior.enabled = showInterior;
+            }
             if (_bodyRenderer == null) { _cinematicBodyHidden = false; return; }
             if (hideBody && !_cinematicBodyHidden)
             {

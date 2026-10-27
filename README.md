@@ -4,14 +4,19 @@
 不是简单挂在相机上：插件在运行时读取游戏主角的 64 根骨骼，把 **55 根骨骼（含双腿、双臂和全部手指）**
 的旋转实时重定向到模型上，所以游泳、走路、手臂动作、手指动作都会跟着走。
 
-- 版本：0.1.15
+- 版本：0.1.0（首个公开版本）
 - 游戏版本：Steam 1.22.83031（Unity 2019.4.36 / Mono / 64 位）
+- English quick start: [README_EN.md](README_EN.md)
 - 插件：BepInEx 5.4.23.5，`PlayerModelReplacer.dll`（游戏日志里显示为 **MMS**）
 - 模型：**不内置**。自己把 PMX 模型和贴图放进 `BepInEx\plugins\PlayerModelReplacer\Models\`
 
-## 依赖
+## 版本记录
 
-当前默认持物方式为 `HoldMode = VanillaAdaptive`：保留原版物品轨迹，按模型掌心校准解算手臂；肘部方向约束覆盖工具、鱼类和普通手持物。下文 `Model`、`Game` 相关段落为保留的旧模式说明。已有配置如仍为 `Model`，需手动改为 `VanillaAdaptive` 才启用新方案。
+0.1.0 首个公开版本。包含 55 根骨骼（双腿、双臂和全部手指）的重定向、第一/第三/第二人称、PDA「模型」页与按材质隐藏/发光、头发/裙子/衣服/挂件/水面物理、长发布料模拟、持物手臂 IK、过场与 PDA 镜头兼容、颈部封口，以及模型导入时的自动部件识别。完整说明见下文，技术记录见 `docs/`。
+
+> 公开版本号从 0.1.0 开始。发布包文件名、DLL 版本和 Nexus 页面统一为 **0.1.0**。
+
+### 开发记录（内部版本号，非公开版本）
 
 0.1.7 将双手工具的肩根去扭转处理扩展到鱼类、普通拾取物，并取消这类物品的额外肩部前伸辅助；保留 0.1.6 的缓存优化和通用肘向约束。短臂模型的极端不可达姿势仍可能出现握点间隙。
 
@@ -31,8 +36,23 @@
 
 0.1.15 修正 PDA 切换模型时的材质生命周期与复用校验：独立保留原版材质模板，避免备用预览材质直接沿用导致透明和发光异常；加强替换模型的源扫描排除。保持透明阈值与发光配置，构建通过，游戏内效果待验证。详见 [材质修正记录](docs/material-lifetime-0.1.15.md)。
 
+0.1.16 改进新模型的头发与衣服识别：支持中文骨骼名、仅在英文名标注用途的骨骼和未翻译的中间辅助骨，按父链继承分类并分别建立物理链，避免把衣摆当成头发。六个新模型的数据检查通过。详见 [次级运动兼容记录](docs/secondary-motion-0.1.16.md)。
+
+0.1.17 改为在模型导入时自动识别头发、衣物和饰带：综合骨骼中英文名、材质与贴图名、蒙皮权重、PMX 刚体/关节及骨骼在模型中的位置；证据不足的部位保持静态。PMX 读取扩展到刚体和关节，支持常见 2.0/2.1 记录。30 个模型转换通过。详见 [自动部件识别记录](docs/automatic-parts-0.1.17.md)。
+
+0.1.18 修正 YYB 系列模型被自动识别接管马尾的问题：已有可识别头发骨骼的 YYB 变体沿用原有头发绑定，其余模型继续自动识别。8 个 YYB 文件的原生头发识别数与 0.1.16 基线一致。详见 [YYB 马尾恢复记录](docs/yyb-hair-0.1.18.md)。
+
+0.1.19 长发统一使用 YYB 的八段整束模拟与权重过渡，并把可分离的披散长发归并成束；过场镜头贴近身体时补绘双臂和袖子，避免手臂随身体保护一起消失；布料碰撞缓存身体矩阵和蒙皮外壳偏移，减少每帧 Transform 访问。29 个模型的发束分组与手臂检查通过。详见 [长发参考方案](docs/hair-reference-0.1.19.md)、[过场手臂修复](docs/cinematic-arms-0.1.19.md)、[性能补丁](docs/performance-0.1.19-followup.md)。
+
+## 持物方式
+
+当前默认持物方式为 `HoldMode = VanillaAdaptive`：保留原版物品轨迹，按模型掌心校准解算手臂；肘部方向约束覆盖工具、鱼类和普通手持物。下文 `Model`、`Game` 相关段落为保留的旧模式说明。已有配置如仍为 `Model`，需手动改为 `VanillaAdaptive` 才启用新方案。
+
+## 依赖
+
 需要先安装 **BepInEx 5.4.x（x64 / Unity Mono 版）**，并确认游戏能正常生成
-`BepInEx\LogOutput.log`。本包只包含插件本体，不含 BepInEx。
+`BepInEx\LogOutput.log`。本包只包含插件本体，不含 BepInEx。推荐使用
+[Tobey's BepInEx Pack for Subnautica](https://www.nexusmods.com/subnautica/mods/1108)。
 
 ## 安装
 
@@ -703,5 +723,13 @@ bash tools/build_plugin.sh
 
 脚本使用 Unity 2019.4 自带的 Mono + csc，引用游戏目录下的 `Assembly-CSharp.dll`、`UnityEngine.*.dll`
 以及 BepInEx 的 `BepInEx.dll` / `0Harmony.dll`。
+
+## 许可与致谢
+
+- 插件代码以 MIT 许可发布，见 [LICENSE](LICENSE)。
+- 本模组**不包含**任何 MMD 模型、模型贴图、语音文件或游戏原文件。模型的版权与使用许可归其作者所有。
+- 依赖 [BepInEx 5](https://github.com/BepInEx/BepInEx)（LGPL-2.1）与 Harmony；PMX 2.1 字段布局参考
+  [OpenMMD 的格式说明](https://github.com/dskjal/OpenMMD/blob/main/docs/specification/pmx2.1-specification.md)。
+- MMS / MikuMikuSwim 与 Crypton Future Media 无关；初音未来等角色名称与形象归其权利人所有。
 
 [0.1.6 performance and source build notes](docs/performance.md)
