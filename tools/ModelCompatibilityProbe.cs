@@ -53,6 +53,20 @@ namespace MikuPlayerReplacer
                 || kind[7]!=PmxConverter.MotionAccessory || kind[8]!=PmxConverter.MotionSkirt
                 || kind[9]!=0 || kind[10]!=PmxConverter.MotionClothes)
                 throw new Exception("Secondary classification regression");
+            // A helper marker at the model origin (YYB's センター先) drives rig
+            // controls. A few weighted vertices must not make it a cloth chain.
+            PmxData control=new PmxData();
+            control.Bones.Add(new PmxBone { Name="全ての親", Parent=-1, Position=Vector3.zero });
+            control.Bones.Add(new PmxBone { Name="センター先", Parent=0, Position=Vector3.zero });
+            control.Bones.Add(new PmxBone { Name="右Y先", Parent=1, Position=new Vector3(-1.04f,10.99f,-2.04f) });
+            control.Positions=new[]{new Vector3(0,10,0)};
+            control.VertexBones=new[]{new[]{1,-1,-1,-1}};
+            control.VertexWeights=new[]{new[]{1f,0f,0f,0f}};
+            control.Indices=new[]{0,0,0};
+            control.Materials.Add(new PmxMaterial { Name="Shirt", SurfaceCount=3 });
+            int[] controlKind=PmxConverter.ClassifySecondaryMotion(control);
+            if(controlKind[1]!=0 || controlKind[2]!=0)
+                throw new Exception("Root control bone must not be simulated");
             VerifyAnonymousParts();
         }
         private static PmxData AnonymousFixture(string anchor)
@@ -167,6 +181,13 @@ namespace MikuPlayerReplacer
                 + " convert_ms=" + watch.Elapsed.TotalMilliseconds.ToString("F2")
                 + " allocated_bytes=" + (allocationMethod != null ? allocated.ToString() : "unavailable"));
             int[] sourceKinds=PmxConverter.ClassifySecondaryMotion(source);
+            for(int i=0;i<source.Bones.Count;i++)
+            {
+                string boneName=source.Bones[i].Name ?? "";
+                if(boneName.IndexOf("センター先",StringComparison.Ordinal)>=0
+                    || boneName.EndsWith("Y先",StringComparison.Ordinal))
+                    Console.WriteLine("CONTROL "+boneName+" kind="+sourceKinds[i]);
+            }
             HashSet<string> retained=new HashSet<string>();
             int hairCount=0, clothCount=0, accessoryCount=0;
             foreach(BoneData b in model.Bones)
@@ -268,6 +289,9 @@ namespace MikuPlayerReplacer
             foreach (BoneData bone in model.Bones)
                 if (PmxConverter.IsSecondaryHair(bone))
                     Console.WriteLine("HAIR " + bone.Name + " parent=" + bone.Parent);
+            foreach (BoneData bone in model.Bones)
+                if (PmxConverter.IsSecondaryClothes(bone))
+                    Console.WriteLine("CLOTHES " + bone.Name + " parent=" + bone.Parent);
         }
     }
 }

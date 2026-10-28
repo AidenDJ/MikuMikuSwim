@@ -5,7 +5,8 @@ A BepInEx 5 plugin for **Subnautica** that replaces the player character with a 
 at runtime and retargets 55 bones (legs, arms, all fingers), so swimming, walking, arm and
 finger animations follow the game character.
 
-Version **0.1.0** — first public release.
+Version **0.1.1** — bug-fix release. Fixes a stray skirt-hem spike on some YYB models by
+excluding root-level rig control bones (`センター先` / `Y先`) from automatic cloth inference.
 
 > **No models are included.** You supply your own PMX models and textures.
 > MMS only loads them; each model remains subject to its author's own license.

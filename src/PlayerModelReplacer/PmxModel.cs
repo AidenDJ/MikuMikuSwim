@@ -830,13 +830,30 @@ namespace MikuPlayerReplacer
             return kinds;
         }
 
-        private static readonly string[] InferenceExcludedNames={"固定","eye","mouth","jaw","teeth","tongue","brow","breast","bust","butt","目","口","舌","歯","眉","胸","臀"};
+        private static readonly string[] InferenceExcludedNames={"固定","eye","mouth","jaw","teeth","tongue","brow","breast","bust","butt","目","口","舌","歯","眉","胸","臀","センター先"};
         private static readonly string[] GarmentMaterialNames={"cloth","dress","fabric","sleeve","garment","衣服","衣装","布料","着物","ワンピース"};
         private static bool CanInferMotion(PmxBone bone)
         {
             if(bone.Ik || MapBone(bone.Name)!=null || MapBone(bone.EnglishName)!=null || FoldTarget(bone.Name)!=null) return false;
             string label=(bone.Name+" "+bone.EnglishName).ToLowerInvariant();
             return !ContainsKeyword(label,InferenceExcludedNames);
+        }
+        private static bool IsRootControl(PmxData source,int index)
+        {
+            // Root-level helper markers such as センター先/Y先 sit at the model
+            // origin and drive rig controls, not cloth. Their few weighted
+            // vertices are enough to pull a visible spike across the skirt.
+            // Check the whole branch: the Y-tip markers are children of センター先.
+            for(int guard=0;index>=0 && index<source.Bones.Count && guard<source.Bones.Count;guard++)
+            {
+                PmxBone bone=source.Bones[index];
+                if(bone.Parent<0 || bone.Parent>=source.Bones.Count) return false;
+                PmxBone parent=source.Bones[bone.Parent];
+                string mapped=MapBone(parent.Name) ?? MapBone(parent.EnglishName);
+                if(mapped=="miku_root" && bone.Position.sqrMagnitude<0.0004f) return true;
+                index=bone.Parent;
+            }
+            return false;
         }
         private static int MaterialMotionKind(PmxMaterial material)
         {
@@ -908,7 +925,7 @@ namespace MikuPlayerReplacer
                 if(MapBone(source.Bones[i].Name)=="head_rig") { head=source.Bones[i].Position; hasHead=true; break; }
             for(int i=0;i<n;i++)
             {
-                if(kinds[i]!=0 || !CanInferMotion(source.Bones[i]) || total[i]<0.05f) continue;
+                if(kinds[i]!=0 || !CanInferMotion(source.Bones[i]) || IsRootControl(source,i) || total[i]<0.05f) continue;
                 int kind=0; float required=total[i]*0.65f;
                 if(hair[i]>=required) kind=MotionHair;
                 else if(skirt[i]>=required) kind=MotionSkirt;
@@ -957,7 +974,7 @@ namespace MikuPlayerReplacer
                 int parent=pending.Dequeue(); if(children[parent]==null) continue;
                 foreach(int child in children[parent])
                 {
-                    if(kinds[child]!=0 || !CanInferMotion(source.Bones[child]) || anchored[child] && !dynamic[child]) continue;
+                    if(kinds[child]!=0 || !CanInferMotion(source.Bones[child]) || IsRootControl(source,child) || anchored[child] && !dynamic[child]) continue;
                     kinds[child]=kinds[parent]; pending.Enqueue(child);
                 }
             }
