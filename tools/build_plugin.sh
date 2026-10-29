@@ -28,6 +28,7 @@ MANAGED="$GAME/Subnautica_Data/Managed"
   -reference:"$MANAGED/UnityEngine.UnityWebRequestModule.dll" \
   -reference:"$MANAGED/UnityEngine.UnityWebRequestTextureModule.dll" \
   "$ROOT/src/PlayerModelReplacer/PlayerModelReplacer.cs" \
+  "$ROOT/src/PlayerModelReplacer/UiText.cs" \
   "$ROOT/src/PlayerModelReplacer/PmxModel.cs" \
   "$ROOT/src/PlayerModelReplacer/LongHairGeometry.cs" \
   "$ROOT/src/PlayerModelReplacer/ClothCollisionPose.cs" \

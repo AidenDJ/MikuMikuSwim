@@ -5,8 +5,11 @@ A BepInEx 5 plugin for **Subnautica** that replaces the player character with a 
 at runtime and retargets 55 bones (legs, arms, all fingers), so swimming, walking, arm and
 finger animations follow the game character.
 
-Version **0.1.1** — bug-fix release. Fixes a stray skirt-hem spike on some YYB models by
-excluding root-level rig control bones (`センター先` / `Y先`) from automatic cloth inference.
+Version **0.1.2** — English interface. The PDA model page, the MMS console (F2) and the
+first-run notice are now bilingual. The language follows the game's own language setting
+and changes with it live; the MMS console has an **Interface language** row for switching
+on the spot, and `UiLanguage` under `[Interface]` in the config file forces one (hand
+edits need a restart). Models, physics and rig logic are unchanged.
 
 > **No models are included.** You supply your own PMX models and textures.
 > MMS only loads them; each model remains subject to its author's own license.
@@ -61,8 +64,12 @@ toggle hair/skirt/clothing/accessory/water physics, adjust hair stiffness and ot
 sliders, and mute the player's own damage/jump/breathing sounds. Settings are stored per
 model in `BepInEx\config\com.miku.subnautica.playerreplacer.cfg`.
 
-The in-game interface is currently **Simplified Chinese**. The screenshots and this quick
-start explain the main controls; see the Chinese `README.md` for the full manual.
+The in-game interface follows the game's own language setting: switch the game to English
+and the MMS pages switch with it, no restart. The MMS console (**F2**) has an **Interface
+language** row that applies immediately as well. `[Interface] UiLanguage` in
+`BepInEx\config\com.miku.subnautica.playerreplacer.cfg` (`Auto`, `Chinese` or `English`)
+also works, but a hand edit needs a restart. The screenshots and this quick start explain
+the main controls; see the Chinese `README.md` for the full manual.
 
 ## Model licensing
 

@@ -211,7 +211,8 @@ namespace MikuPlayerReplacer
                 Rect rect = new Rect((Screen.width - w) * 0.5f,
                     (Screen.height - h) * 0.5f, w, h);
                 GUILayout.Window(WindowId, rect, DrawWindow,
-                    "MMS 控制台  MikuMikuSwim", _windowStyle);
+                    UiText.T("MMS 控制台  MikuMikuSwim", "MMS Console  MikuMikuSwim"),
+                    _windowStyle);
             }
             catch (Exception)
             {
@@ -227,28 +228,46 @@ namespace MikuPlayerReplacer
                 return;
             }
 
-            GUILayout.Label("MMS 总开关", _titleStyle);
+            GUILayout.Label(UiText.T("MMS 总开关", "MMS master switch"), _titleStyle);
             bool enabled = GUILayout.Toggle(plugin.MasterEnabled,
-                "  启用模型替换（关闭后恢复游戏原角色）", _toggleStyle);
+                UiText.T("  启用模型替换（关闭后恢复游戏原角色）",
+                    "  Enable model replacement (off = vanilla character)"),
+                _toggleStyle);
             if (enabled != plugin.MasterEnabled)
             {
                 plugin.SetMasterEnabled(enabled);
             }
             GUILayout.Label(plugin.MasterEnabled
-                ? "状态：已开启"
-                : "状态：已关闭，原版角色已恢复", _hintStyle);
+                ? UiText.T("状态：已开启", "Status: on")
+                : UiText.T("状态：已关闭，原版角色已恢复",
+                    "Status: off, vanilla character restored"), _hintStyle);
 
             string model = plugin.ActiveModelId;
-            GUILayout.Label("当前模型：" +
-                (string.IsNullOrEmpty(model) ? "未选择（Models 文件夹为空）" : model), _hintStyle);
+            GUILayout.Label(UiText.T("当前模型：", "Current model: ") +
+                (string.IsNullOrEmpty(model)
+                    ? UiText.T("未选择（Models 文件夹为空）",
+                        "none (Models folder is empty)")
+                    : model), _hintStyle);
 
             GUILayout.Space(8f);
-            GUILayout.Label("按键设置", _titleStyle);
+            GUILayout.Label(UiText.T("界面语言", "Interface language"), _titleStyle);
             using (new GUILayout.HorizontalScope())
             {
-                GUILayout.Label("菜单键位（打开 PDA 模型页）：" +
+                DrawLanguageButton(plugin, UiText.T("自动", "Auto"), UiLanguageMode.Auto);
+                DrawLanguageButton(plugin, "中文", UiLanguageMode.Chinese);
+                DrawLanguageButton(plugin, "English", UiLanguageMode.English);
+            }
+
+            GUILayout.Space(8f);
+            GUILayout.Label(UiText.T("按键设置", "Key bindings"), _titleStyle);
+            using (new GUILayout.HorizontalScope())
+            {
+                GUILayout.Label(UiText.T("菜单键位（打开 PDA 模型页）：",
+                    "Menu key (opens the PDA model page): ") +
                     KeyLabel(plugin.MenuKeyCode), _labelStyle);
-                if (GUILayout.Button(_capture == CaptureMode.Menu ? "按下按键…" : "修改",
+                if (GUILayout.Button(_capture == CaptureMode.Menu
+                        ? UiText.T("按下按键…", "Press a key...")
+                        : UiText.T("修改", "Change"),
                         _buttonStyle, GUILayout.Width(96f)))
                 {
                     _capture = CaptureMode.Menu;
@@ -256,9 +275,12 @@ namespace MikuPlayerReplacer
             }
             using (new GUILayout.HorizontalScope())
             {
-                GUILayout.Label("控制台键位（打开本窗口）：" +
+                GUILayout.Label(UiText.T("控制台键位（打开本窗口）：",
+                    "Console key (opens this window): ") +
                     KeyLabel(plugin.ConsoleKeyCode), _labelStyle);
-                if (GUILayout.Button(_capture == CaptureMode.Console ? "按下按键…" : "修改",
+                if (GUILayout.Button(_capture == CaptureMode.Console
+                        ? UiText.T("按下按键…", "Press a key...")
+                        : UiText.T("修改", "Change"),
                         _buttonStyle, GUILayout.Width(96f)))
                 {
                     _capture = CaptureMode.Console;
@@ -266,14 +288,16 @@ namespace MikuPlayerReplacer
             }
             if (_capture != CaptureMode.None)
             {
-                GUILayout.Label("请按下一个按键（Esc 取消）", _hintStyle);
+                GUILayout.Label(UiText.T("请按下一个按键（Esc 取消）",
+                    "Press a key (Esc cancels)"), _hintStyle);
             }
 
             GUILayout.Space(8f);
-            GUILayout.Label("音效", _titleStyle);
+            GUILayout.Label(UiText.T("音效", "Audio"), _titleStyle);
             bool mute = plugin.MutePlayerSounds != null && plugin.MutePlayerSounds.Value;
             bool muteNew = GUILayout.Toggle(mute,
-                "  屏蔽主角音效（受伤痛呼、跳跃喘气、水下换气）", _toggleStyle);
+                UiText.T("  屏蔽主角音效（受伤痛呼、跳跃喘气、水下换气）",
+                    "  Mute player voice (hurt, jump, breath)"), _toggleStyle);
             if (muteNew != mute && plugin.MutePlayerSounds != null)
             {
                 plugin.MutePlayerSounds.Value = muteNew;
@@ -285,29 +309,54 @@ namespace MikuPlayerReplacer
             GUILayout.Space(10f);
             using (new GUILayout.HorizontalScope())
             {
-                if (GUILayout.Button("打开模型页", _buttonStyle))
+                if (GUILayout.Button(UiText.T("打开模型页", "Open model page"),
+                        _buttonStyle))
                 {
                     Close();
                     plugin.OpenModelTab();
                 }
-                if (GUILayout.Button("重建当前模型", _buttonStyle))
+                if (GUILayout.Button(UiText.T("重建当前模型", "Rebuild current model"),
+                        _buttonStyle))
                 {
                     plugin.RebuildModel();
                 }
                 GUILayout.FlexibleSpace();
-                if (GUILayout.Button("关闭", _buttonStyle, GUILayout.Width(80f)))
+                if (GUILayout.Button(UiText.T("关闭", "Close"), _buttonStyle,
+                        GUILayout.Width(80f)))
                 {
                     Close();
                 }
             }
-            GUILayout.Label("按 " + KeyLabel(plugin.ConsoleKeyCode) +
-                " 打开或关闭控制台；菜单键位也可以在这里改。", _hintStyle);
+            GUILayout.Label(UiText.T(
+                "按 " + KeyLabel(plugin.ConsoleKeyCode) +
+                " 打开或关闭控制台；菜单键位也可以在这里改。",
+                "Press " + KeyLabel(plugin.ConsoleKeyCode) +
+                " to open or close the console; the menu key can be changed " +
+                "here too."), _hintStyle);
 
             if (GUI.changed)
             {
                 // Keeps a dragged window usable; no config is written by layout.
             }
             GUI.DragWindow(new Rect(0f, 0f, 10000f, 24f));
+        }
+
+        /// <summary>
+        /// One of the three language choices. The active one is drawn bracketed
+        /// and does nothing when clicked; a plain toolbar would use the default
+        /// IMGUI font, which has no CJK glyphs.
+        /// </summary>
+        private static void DrawLanguageButton(MikuPlayerReplacerPlugin plugin, string label,
+            UiLanguageMode mode)
+        {
+            bool active = UiText.Mode == mode;
+            if (GUILayout.Button(active ? "[" + label + "]" : label, _buttonStyle,
+                    GUILayout.Width(100f)) && !active)
+            {
+                UiText.SetMode(mode);
+                plugin.MarkConfigDirty();
+                plugin.SaveConfigIfDirty();
+            }
         }
 
         private static void HandleCapture(MikuPlayerReplacerPlugin plugin)
@@ -385,7 +434,7 @@ namespace MikuPlayerReplacer
                 case KeyCode.Escape:
                     return "Esc";
                 case KeyCode.Space:
-                    return "空格";
+                    return UiText.T("空格", "Space");
                 default:
                     return code.ToString();
             }

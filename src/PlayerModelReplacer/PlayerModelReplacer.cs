@@ -179,7 +179,7 @@ namespace MikuPlayerReplacer
         public const string PluginGuid = "com.miku.subnautica.playerreplacer";
         // MMS = MikuMikuSwim: the mod's short name, also the PDA tab label.
         public const string PluginName = "MMS";
-        public const string PluginVersion = "0.1.1";
+        public const string PluginVersion = "0.1.2";
 
         // ---- configuration ----
         private ConfigEntry<float> _scale;
@@ -3173,6 +3173,13 @@ namespace MikuPlayerReplacer
             // MasterEnabled, which stays false until the notice is accepted.
             ConsentGate.Bind(Config);
 
+            // Every label the mod draws itself goes through UiText, and the
+            // first-run notice is built from StartScreen before any other UI, so
+            // the language has to be known before that.
+            UiText.Bind(Config);
+            Logger.LogInfo("UI language: " + (UiText.English ? "English" : "Chinese") +
+                ".");
+
             _enabled = Config.Bind("General", "Enabled", true,
                 "MMS master switch. When off the game's original character is shown " +
                 "again and the model, its clothes, physics and PDA preview are " +
@@ -3491,7 +3498,7 @@ namespace MikuPlayerReplacer
                 "when jumping, and the underwater breathing loop. Footsteps, " +
                 "splashes, bubbles, the PDA voice and all damage, health and red " +
                 "flash effects are unaffected. Can be toggled live in the PDA model " +
-                "page (音效 group).");
+                "page (音效 / Audio group).");
             MutePlayerSoundsActive = _mutePlayerSounds.Value;
             // Carry the old pain-only setting over and drop the stale entry. Skip the
             // copy when the new key already exists in the file (the player has since
@@ -3570,7 +3577,7 @@ namespace MikuPlayerReplacer
                     "around instead of teleporting it. While standing still, or " +
                     "during cinematics and interactions, the whole follow fades out so " +
                     "turning the camera moves nothing on the model. 0.6-0.8 reads as a natural glance; can be dragged live in " +
-                    "the PDA model page (视角 group).",
+                    "the PDA model page (视角 / View group).",
                     new AcceptableValueRange<float>(0f, 1f)));
             _idleDelay = Config.Bind("View", "IdleDelay", 3f,
                 new ConfigDescription(
@@ -3579,7 +3586,7 @@ namespace MikuPlayerReplacer
                     "keeps following the camera and the swim pose stays live, so a " +
                     "brief pause still looks alive; after it the body, head, hair and " +
                     "clothes ignore the camera completely. Can be dragged live in the " +
-                    "PDA model page (视角 group).",
+                    "PDA model page (视角 / View group).",
                     new AcceptableValueRange<float>(0f, 10f)));
             _poseTime = Config.Bind("View", "PoseTransition", 0.6f,
                 new ConfigDescription(
@@ -3618,7 +3625,8 @@ namespace MikuPlayerReplacer
             if (_modelCatalog.Count == 0)
             {
                 Logger.LogInfo("No models installed. Put a model folder (PMX + textures) in "
-                    + Path.Combine(_modelDir, "Models") + " and press 刷新列表 in the PDA.");
+                    + Path.Combine(_modelDir, "Models")
+                    + " and press \"Refresh list\" (刷新列表) in the PDA.");
             }
             else if (!LoadModel(FindActiveModel(), false))
             {
@@ -5086,7 +5094,10 @@ namespace MikuPlayerReplacer
                     "中条款署名要求否修改商用禁止等事项版权与许可归其作者" +
                     "不再显示下次启动直接进入游戏同意拒绝我点击会退出" +
                     ConsentDialogHost.PrewarmText +
-                    "，。：；！？（）【】《》、·—…“”‘’0123456789.%/+- F";
+                    "，。：；！？（）【】《》、·—…“”‘’0123456789.%/+- F" +
+                    // The English interface is ASCII-only, so one range covers
+                    // every label it can draw at any size.
+                    UiText.PrewarmAscii;
                 // The dynamic font rasterises per size: the model page uses 16/20,
                 // the console 13/15/16/17 and the first-run notice 12-27. Reserve
                 // every size up front so the first press of F2 or the notice does
@@ -5101,6 +5112,11 @@ namespace MikuPlayerReplacer
                 _uiFont.RequestCharactersInTexture(ConsentDialogHost.PrewarmText, 20,
                     FontStyle.Bold);
                 _uiFont.RequestCharactersInTexture(ConsentDialogHost.PrewarmText, 27,
+                    FontStyle.Bold);
+                // English notice: title at 27 and the two buttons at 20 are bold.
+                _uiFont.RequestCharactersInTexture(UiText.PrewarmAscii, 20,
+                    FontStyle.Bold);
+                _uiFont.RequestCharactersInTexture(UiText.PrewarmAscii, 27,
                     FontStyle.Bold);
                 // Model names come from folder names, so they vary; reserve them too.
                 for (int i = 0; i < _modelCatalog.Count; i++)

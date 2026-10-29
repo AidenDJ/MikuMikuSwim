@@ -48,12 +48,14 @@ namespace MikuPlayerReplacer
         internal static void Bind(ConfigFile config)
         {
             _accepted = config.Bind("General", "TermsAccepted", false,
-                "Written by the first-run notice: true once \"我同意\" has been " +
-                "clicked. The mod does not replace the character until this is true.");
+                "Written by the first-run notice: true once \"I agree\" (我同意) " +
+                "has been clicked. The mod does not replace the character until " +
+                "this is true.");
             _dontShow = config.Bind("General", "TermsDontShowAgain", false,
-                "Written by the \"不再显示\" box of the first-run notice. Only " +
-                "honoured together with TermsAccepted; with the box unticked the " +
-                "notice is shown again at every game start.");
+                "Written by the \"Don't show again\" (不再显示) box of the " +
+                "first-run notice. Only honoured together with TermsAccepted; " +
+                "with the box unticked the notice is shown again at every game " +
+                "start.");
         }
 
         internal static void Accept(bool dontShow)
@@ -169,6 +171,20 @@ namespace MikuPlayerReplacer
             "署名要求、可否修改、可否商用、禁止事项等。\n" +
             "模型的版权与使用许可归其作者所有。";
         private const string DontShowText = "不再显示（下次启动直接进入游戏）";
+
+        // English labels are kept ASCII-only on purpose: the dynamic font reserves
+        // the whole printable ASCII range for every size, and nothing else.
+        private const string TitleEn = "MMS mod - Terms of use";
+        private const string SubtitleEn = "MikuMikuSwim - Subnautica player model replacer";
+        private const string BodyEn =
+            "This mod does not include any models.\n" +
+            "Before using a model, read and follow the terms in its own README:\n" +
+            "credit, modification, commercial use and prohibited uses.\n" +
+            "The model and its licence belong to its author.";
+        private const string DontShowEn = "Don't show again (go straight in next launch)";
+        private const string AgreeEn = "I agree";
+        private const string DeclineEn = "I decline";
+        private const string HintEn = "Clicking \"I decline\" quits the game immediately.";
 
         /// <summary>Every glyph the notice can draw, prewarmed in the plugin Awake.</summary>
         internal const string PrewarmText = TitleText + SubtitleText + BodyText +
@@ -299,9 +315,9 @@ namespace MikuPlayerReplacer
                     logoImage.raycastTarget = false;
                     titleX = 94f;
                 }
-                NewText("Title", panel, TitleText, 27, Color.white,
+                NewText("Title", panel, UiText.T(TitleText, TitleEn), 27, Color.white,
                     TextAnchor.UpperLeft, true, titleX, 24f, 620f, 40f);
-                NewText("Subtitle", panel, SubtitleText, 15, DimColor,
+                NewText("Subtitle", panel, UiText.T(SubtitleText, SubtitleEn), 15, DimColor,
                     TextAnchor.UpperLeft, false, titleX + 2f, 64f, 620f, 24f);
 
                 RectTransform divider = NewRect("Divider", panel);
@@ -311,18 +327,20 @@ namespace MikuPlayerReplacer
                 dividerImage.color = new Color(Accent.r, Accent.g, Accent.b, 0.30f);
                 dividerImage.raycastTarget = false;
 
-                NewText("Body", panel, BodyText, 19, BodyColor,
+                NewText("Body", panel, UiText.T(BodyText, BodyEn), 19, BodyColor,
                     TextAnchor.UpperLeft, false, 30f, 116f, 700f, 126f);
 
                 BuildCheckbox(panel);
-                BuildButton(panel, "我同意", 28f, new Color(0.075f, 0.30f, 0.34f),
+                BuildButton(panel, UiText.T("我同意", AgreeEn), 28f,
+                    new Color(0.075f, 0.30f, 0.34f),
                     new Color(0.75f, 0.95f, 0.97f), Accent, true);
-                BuildButton(panel, "我拒绝", 392f, new Color(0.17f, 0.10f, 0.11f),
+                BuildButton(panel, UiText.T("我拒绝", DeclineEn), 392f,
+                    new Color(0.17f, 0.10f, 0.11f),
                     new Color(1f, 0.82f, 0.82f),
                     new Color(0.85f, 0.40f, 0.40f), false);
 
-                NewText("Hint", panel, "点击“我拒绝”会直接退出游戏。", 14, DimColor,
-                    TextAnchor.UpperLeft, false, 30f, 386f, 640f, 22f);
+                NewText("Hint", panel, UiText.T("点击“我拒绝”会直接退出游戏。", HintEn),
+                    14, DimColor, TextAnchor.UpperLeft, false, 30f, 386f, 640f, 22f);
                 NewText("Version", panel, "MMS v" + MikuPlayerReplacerPlugin.PluginVersion,
                     12, new Color(DimColor.r, DimColor.g, DimColor.b, 0.8f),
                     TextAnchor.UpperRight, false, 590f, 406f, 142f, 20f);
@@ -367,8 +385,8 @@ namespace MikuPlayerReplacer
             _toggleHitImage = hit;
             _checkImage = checkImage;
 
-            NewText("Label", row, DontShowText, 17, BodyColor, TextAnchor.MiddleLeft,
-                false, 42f, 0f, 650f, 40f);
+            NewText("Label", row, UiText.T(DontShowText, DontShowEn), 17, BodyColor,
+                TextAnchor.MiddleLeft, false, 42f, 0f, 650f, 40f);
         }
 
         private void BuildButton(RectTransform panel, string label, float x,

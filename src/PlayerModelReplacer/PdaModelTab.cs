@@ -448,6 +448,9 @@ namespace MikuPlayerReplacer
         private int _lastAutoPreviewGen = -1;
         private string _lastModelId;
         private bool _open;
+        // Language the page was built in; a change means the labels have to be
+        // generated again, since each one is baked into its Text component.
+        private bool _uiEnglish;
 
         private Camera _camera;
         private RenderTexture _rt;
@@ -693,6 +696,11 @@ namespace MikuPlayerReplacer
         public override void Open()
         {
             _open = true;
+            if (UiText.English != _uiEnglish)
+            {
+                // Changed from the console while the PDA was closed.
+                RebuildUi();
+            }
             ApplyPageRect();
             Show(true);
             EnsureRig();
@@ -765,6 +773,12 @@ namespace MikuPlayerReplacer
         {
             if (!IsShowing)
             {
+                return;
+            }
+            if (UiText.English != _uiEnglish)
+            {
+                // Changed from the console with this page still open.
+                RebuildUi();
                 return;
             }
             MikuPlayerReplacerPlugin p = Plugin;
@@ -891,11 +905,12 @@ namespace MikuPlayerReplacer
             string message;
             if (!ReferenceEquals(p, null) && !p.MasterEnabled)
             {
-                message = "MMS 已关闭（按 F2 打开控制台开启）";
+                message = UiText.T("MMS 已关闭（按 F2 打开控制台开启）",
+                    "MMS is off (open the console with F2 to enable it)");
             }
             else if (ReferenceEquals(p, null) || (!p.PreviewBuilt && !p.IsModelBuilt))
             {
-                message = "正在加载模型…";
+                message = UiText.T("正在加载模型…", "Loading model...");
             }
             else
             {
@@ -1049,14 +1064,15 @@ namespace MikuPlayerReplacer
             left.offsetMax = new Vector2(300f, 0f);
             NewImage(left, PanelColor);
 
-            NewHeader(left, "模型列表", 0f);
+            NewHeader(left, UiText.T("模型列表", "Models"), 0f);
             ScrollRect modelScroll = NewScroll(left, "ModelScroll", out _modelContent);
             RectTransform modelRt = (RectTransform)modelScroll.transform;
             Stretch(modelRt, 0f, 40f, 0f, 40f);
 
             // Clicking a model only preloads it into the T-pose preview; this
             // button is what actually puts it on the character.
-            Button apply = NewButton(left, "应用模型", AccentColor, 16);
+            Button apply = NewButton(left, UiText.T("应用模型", "Apply model"),
+                AccentColor, 16);
             RectTransform applyRt = (RectTransform)apply.transform;
             applyRt.anchorMin = new Vector2(0f, 0f);
             applyRt.anchorMax = new Vector2(1f, 0f);
@@ -1065,7 +1081,8 @@ namespace MikuPlayerReplacer
             applyRt.offsetMax = new Vector2(-4f, 34f);
             apply.onClick.AddListener(OnApplyClicked);
 
-            Button refresh = NewButton(left, "刷新列表", RowColor, 16);
+            Button refresh = NewButton(left, UiText.T("刷新列表", "Refresh list"),
+                RowColor, 16);
             RectTransform refreshRt = (RectTransform)refresh.transform;
             refreshRt.anchorMin = new Vector2(0f, 0f);
             refreshRt.anchorMax = new Vector2(1f, 0f);
@@ -1086,7 +1103,9 @@ namespace MikuPlayerReplacer
             previewArea.anchorMax = new Vector2(1f, 1f);
             previewArea.offsetMin = Vector2.zero;
             previewArea.offsetMax = Vector2.zero;
-            NewHeader(previewArea, "预览（拖动旋转 · 滚轮缩放 · 右键平移）", 0f);
+            NewHeader(previewArea,
+                UiText.T("预览（拖动旋转 · 滚轮缩放 · 右键平移）",
+                    "Preview (drag: rotate, wheel: zoom, right-drag: pan)"), 0f);
 
             RectTransform frame = NewRect("Frame", previewArea);
             Stretch(frame, 0f, 0f, 0f, 34f);
@@ -1104,7 +1123,8 @@ namespace MikuPlayerReplacer
             // CreateRenderTexture), so the image can simply fill the frame
             // instead of being forced into a square.
 
-            _statusText = NewText(frame, "正在加载模型…", 18, DimColor, TextAnchor.MiddleCenter);
+            _statusText = NewText(frame, UiText.T("正在加载模型…", "Loading model..."),
+                18, DimColor, TextAnchor.MiddleCenter);
             Stretch(_statusText.rectTransform, 8f, 8f, 8f, 8f);
 
             // Drag surface on top of the preview: dragging orbits the preview camera
@@ -1131,8 +1151,9 @@ namespace MikuPlayerReplacer
             parts.offsetMax = new Vector2(-6f, 0f);
             NewImage(parts, PanelColor);
 
-            NewHeader(parts, "部位隐藏（按材质）", 0f);
-            Button showAll = NewButton(parts, "全部显示", RowColor, 15);
+            NewHeader(parts, UiText.T("部位隐藏（按材质）", "Parts (hide by material)"), 0f);
+            Button showAll = NewButton(parts, UiText.T("全部显示", "Show all"),
+                RowColor, 15);
             RectTransform showAllRt = (RectTransform)showAll.transform;
             showAllRt.anchorMin = new Vector2(1f, 1f);
             showAllRt.anchorMax = new Vector2(1f, 1f);
@@ -1150,12 +1171,46 @@ namespace MikuPlayerReplacer
             tune.offsetMin = new Vector2(6f, 0f);
             tune.offsetMax = new Vector2(0f, 0f);
             NewImage(tune, PanelColor);
-            NewHeader(tune, "调整（拖动立即生效）", 0f);
+            NewHeader(tune, UiText.T("调整（拖动立即生效）",
+                "Tuning (applies instantly)"), 0f);
 
             ScrollRect tuneScroll = NewScroll(tune, "TuneScroll", out _tuneContent);
             Stretch((RectTransform)tuneScroll.transform, 4f, 4f, 4f, 36f);
 
             BuildTunables();
+            _uiEnglish = UiText.English;
+        }
+
+        /// <summary>
+        /// Throws the page away and builds it again, so the labels come out in the
+        /// current language. Only called when the language actually changed: the
+        /// preview camera and its render texture are kept, the new image is simply
+        /// given the same texture back.
+        /// </summary>
+        private void RebuildUi()
+        {
+            if (_root != null)
+            {
+                for (int i = _root.childCount - 1; i >= 0; i--)
+                {
+                    Destroy(_root.GetChild(i).gameObject);
+                }
+            }
+            _statusText = null;
+            _previewImage = null;
+            _modelContent = null;
+            _materialContent = null;
+            _tuneContent = null;
+            _modelButtons.Clear();
+            _modelLabels.Clear();
+            _materialRows.Clear();
+            _materialListKey = null;
+            BuildUi();
+            if (_rt != null && _previewImage != null)
+            {
+                _previewImage.texture = _rt;
+            }
+            _previewDirty = true;
         }
 
         /// <summary>One collapsible group in the tuning list. The rows stay direct
@@ -1184,7 +1239,7 @@ namespace MikuPlayerReplacer
 
             Text titleText = NewText(header, title, 17, TextColor, TextAnchor.MiddleLeft);
             Stretch(titleText.rectTransform, 10f, 0f, 76f, 0f);
-            Text state = NewText(header, expanded ? "收起" : "展开", 14, DimColor,
+            Text state = NewText(header, SectionStateLabel(expanded), 14, DimColor,
                 TextAnchor.MiddleRight);
             Stretch(state.rectTransform, 10f, 0f, 10f, 0f);
 
@@ -1193,6 +1248,13 @@ namespace MikuPlayerReplacer
             section.Expanded = expanded;
             button.onClick.AddListener(delegate { SetSectionExpanded(section, !section.Expanded); });
             return section;
+        }
+
+        private static string SectionStateLabel(bool expanded)
+        {
+            return expanded
+                ? UiText.T("收起", "Collapse")
+                : UiText.T("展开", "Expand");
         }
 
         private static void AddRow(TuneSection section, GameObject row)
@@ -1210,7 +1272,7 @@ namespace MikuPlayerReplacer
             section.Expanded = expanded;
             if (section.State != null)
             {
-                section.State.text = expanded ? "收起" : "展开";
+                section.State.text = SectionStateLabel(expanded);
             }
             for (int i = 0; i < section.Rows.Count; i++)
             {
@@ -1236,99 +1298,129 @@ namespace MikuPlayerReplacer
 
             // Every group starts collapsed: there are enough knobs now that the
             // panel was an endless wall of rows.
-            TuneSection hair = NewSection(_tuneContent, "头发", false);
-            _tgHairPhysics = NewToggle(_tuneContent, "头发物理",
+            TuneSection hair = NewSection(_tuneContent, UiText.T("头发", "Hair"), false);
+            _tgHairPhysics = NewToggle(_tuneContent,
+                UiText.T("头发物理", "Hair physics"),
                 p.HairPhysics.Value, OnHairPhysicsChanged);
             AddRow(hair, _tgHairPhysics.gameObject);
-            _tgCollision = NewToggle(_tuneContent, "头发碰撞",
+            _tgCollision = NewToggle(_tuneContent,
+                UiText.T("头发碰撞", "Hair collision"),
                 p.HairCollision.Value, OnHairCollisionChanged);
             AddRow(hair, _tgCollision.gameObject);
-            _tgLimbCollision = NewToggle(_tuneContent, "四肢碰撞",
+            _tgLimbCollision = NewToggle(_tuneContent,
+                UiText.T("四肢碰撞", "Limb collision"),
                 p.LimbCollision.Value, OnLimbCollisionChanged);
             AddRow(hair, _tgLimbCollision.gameObject);
-            _tgShowHair = NewToggle(_tuneContent, "第一人称显示双马尾",
+            _tgShowHair = NewToggle(_tuneContent,
+                UiText.T("第一人称显示双马尾", "Twintails in first person"),
                 p.ShowHair.Value, OnShowHairChanged);
             AddRow(hair, _tgShowHair.gameObject);
-            _slFringe = NewSliderRow(_tuneContent, "刘海摆动", 0f, 2f,
+            _slFringe = NewSliderRow(_tuneContent,
+                UiText.T("刘海摆动", "Fringe sway"), 0f, 2f,
                 p.FringeSway.Value, out _valFringe, OnFringeChanged);
             AddRow(hair, _slFringe.gameObject);
-            _slStiffness = NewSliderRow(_tuneContent, "头发刚度", 0f, 20f,
+            _slStiffness = NewSliderRow(_tuneContent,
+                UiText.T("头发刚度", "Hair stiffness"), 0f, 20f,
                 p.HairStiffness.Value, out _valStiffness, OnStiffnessChanged);
             AddRow(hair, _slStiffness.gameObject);
-            _slGravity = NewSliderRow(_tuneContent, "头发重力", 0f, 20f,
+            _slGravity = NewSliderRow(_tuneContent,
+                UiText.T("头发重力", "Hair gravity"), 0f, 20f,
                 p.HairGravity.Value, out _valGravity, OnGravityChanged);
             AddRow(hair, _slGravity.gameObject);
-            _slDamping = NewSliderRow(_tuneContent, "水的阻力", 0f, 20f,
+            _slDamping = NewSliderRow(_tuneContent,
+                UiText.T("水的阻力", "Water drag"), 0f, 20f,
                 p.HairDamping.Value, out _valDamping, OnDampingChanged);
             AddRow(hair, _slDamping.gameObject);
-            _slFlow = NewSliderRow(_tuneContent, "暗流强度", 0f, 1f,
+            _slFlow = NewSliderRow(_tuneContent,
+                UiText.T("暗流强度", "Current strength"), 0f, 1f,
                 p.HairFlow.Value, out _valFlow, OnFlowChanged);
             AddRow(hair, _slFlow.gameObject);
-            _slTwist = NewSliderRow(_tuneContent, "扭转跟随", 0.3f, 20f,
+            _slTwist = NewSliderRow(_tuneContent,
+                UiText.T("扭转跟随", "Twist follow"), 0.3f, 20f,
                 p.HairTwistFollow.Value, out _valTwist, OnTwistChanged);
             AddRow(hair, _slTwist.gameObject);
 
-            TuneSection cloth = NewSection(_tuneContent, "裙子与衣服", false);
-            _tgSkirtPhysics = NewToggle(_tuneContent, "裙子物理",
+            TuneSection cloth = NewSection(_tuneContent,
+                UiText.T("裙子与衣服", "Skirt & clothing"), false);
+            _tgSkirtPhysics = NewToggle(_tuneContent,
+                UiText.T("裙子物理", "Skirt physics"),
                 p.SkirtPhysics.Value, OnSkirtPhysicsChanged);
             AddRow(cloth, _tgSkirtPhysics.gameObject);
-            _tgClothesPhysics = NewToggle(_tuneContent, "衣服物理",
+            _tgClothesPhysics = NewToggle(_tuneContent,
+                UiText.T("衣服物理", "Clothing physics"),
                 p.ClothesPhysics.Value, OnClothesPhysicsChanged);
             AddRow(cloth, _tgClothesPhysics.gameObject);
-            _slSkirtStiffness = NewSliderRow(_tuneContent, "裙子硬度", 0.1f, 3f,
+            _slSkirtStiffness = NewSliderRow(_tuneContent,
+                UiText.T("裙子硬度", "Skirt stiffness"), 0.1f, 3f,
                 p.SkirtStiffness.Value, out _valSkirtStiffness, OnSkirtStiffnessChanged);
             AddRow(cloth, _slSkirtStiffness.gameObject);
-            _slSkirtLeash = NewSliderRow(_tuneContent, "裙摆活动范围", 0f, 3f,
+            _slSkirtLeash = NewSliderRow(_tuneContent,
+                UiText.T("裙摆活动范围", "Sway range"), 0f, 3f,
                 p.SkirtLeash.Value, out _valSkirtLeash, OnSkirtLeashChanged);
             AddRow(cloth, _slSkirtLeash.gameObject);
-            _slSkirtClearance = NewSliderRow(_tuneContent, "裙子与腿间隙", 0f, 0.08f,
+            _slSkirtClearance = NewSliderRow(_tuneContent,
+                UiText.T("裙子与腿间隙", "Skirt-leg gap"), 0f, 0.08f,
                 p.SkirtClearance.Value, out _valSkirtClearance, OnSkirtClearanceChanged);
             AddRow(cloth, _slSkirtClearance.gameObject);
 
-            TuneSection accessory = NewSection(_tuneContent, "挂件", false);
-            _tgAccessoryPhysics = NewToggle(_tuneContent, "挂件物理",
+            TuneSection accessory = NewSection(_tuneContent,
+                UiText.T("挂件", "Accessories"), false);
+            _tgAccessoryPhysics = NewToggle(_tuneContent,
+                UiText.T("挂件物理", "Accessory physics"),
                 p.AccessoryPhysics.Value, OnAccessoryPhysicsChanged);
             AddRow(accessory, _tgAccessoryPhysics.gameObject);
 
-            TuneSection surface = NewSection(_tuneContent, "水面", false);
-            _tgSurfacePhysics = NewToggle(_tuneContent, "水面物理",
+            TuneSection surface = NewSection(_tuneContent,
+                UiText.T("水面", "Water surface"), false);
+            _tgSurfacePhysics = NewToggle(_tuneContent,
+                UiText.T("水面物理", "Surface physics"),
                 p.SurfacePhysics.Value, OnSurfacePhysicsChanged);
             AddRow(surface, _tgSurfacePhysics.gameObject);
-            _slAirGravity = NewSliderRow(_tuneContent, "空气重力", 0f, 20f,
+            _slAirGravity = NewSliderRow(_tuneContent,
+                UiText.T("空气重力", "Air gravity"), 0f, 20f,
                 p.AirGravity.Value, out _valAirGravity, OnAirGravityChanged);
             AddRow(surface, _slAirGravity.gameObject);
-            _slAirDamping = NewSliderRow(_tuneContent, "空气阻力", 0f, 20f,
+            _slAirDamping = NewSliderRow(_tuneContent,
+                UiText.T("空气阻力", "Air drag"), 0f, 20f,
                 p.AirDamping.Value, out _valAirDamping, OnAirDampingChanged);
             AddRow(surface, _slAirDamping.gameObject);
 
-            TuneSection view = NewSection(_tuneContent, "视角", false);
-            _slHeadLook = NewSliderRow(_tuneContent, "头部俯仰跟随", 0f, 1f,
+            TuneSection view = NewSection(_tuneContent, UiText.T("视角", "View"), false);
+            _slHeadLook = NewSliderRow(_tuneContent,
+                UiText.T("头部俯仰跟随", "Head pitch"), 0f, 1f,
                 p.HeadLook.Value, out _valHeadLook, OnHeadLookChanged);
             AddRow(view, _slHeadLook.gameObject);
-            _slIdleDelay = NewSliderRow(_tuneContent, "待机判定延时", 0f, 10f,
+            _slIdleDelay = NewSliderRow(_tuneContent,
+                UiText.T("待机判定延时", "Idle delay"), 0f, 10f,
                 p.IdleDelay.Value, out _valIdleDelay, OnIdleDelayChanged);
             AddRow(view, _slIdleDelay.gameObject);
-            _slPoseTransition = NewSliderRow(_tuneContent, "动作衔接时长", 0.1f, 2f,
+            _slPoseTransition = NewSliderRow(_tuneContent,
+                UiText.T("动作衔接时长", "Pose blend"), 0.1f, 2f,
                 p.PoseTransition.Value, out _valPoseTransition, OnPoseTransitionChanged);
             AddRow(view, _slPoseTransition.gameObject);
 
-            TuneSection glow = NewSection(_tuneContent, "发光", false);
-            _slGlow = NewSliderRow(_tuneContent, "发光强度", 0f, 3f,
+            TuneSection glow = NewSection(_tuneContent, UiText.T("发光", "Glow"), false);
+            _slGlow = NewSliderRow(_tuneContent,
+                UiText.T("发光强度", "Glow strength"), 0f, 3f,
                 p.HighlightGlow.Value, out _valGlow, OnGlowChanged);
             AddRow(glow, _slGlow.gameObject);
 
-            TuneSection audio = NewSection(_tuneContent, "音效", false);
-            _tgMutePlayer = NewToggle(_tuneContent, "屏蔽主角音效",
+            TuneSection audio = NewSection(_tuneContent, UiText.T("音效", "Audio"), false);
+            _tgMutePlayer = NewToggle(_tuneContent,
+                UiText.T("屏蔽主角音效", "Mute player voice"),
                 p.MutePlayerSounds.Value, OnMutePlayerSoundsChanged);
             AddRow(audio, _tgMutePlayer.gameObject);
 
-            Button reset = NewButton(_tuneContent, "恢复默认值", RowColor, 16);
+            Button reset = NewButton(_tuneContent,
+                UiText.T("恢复默认值", "Reset to defaults"), RowColor, 16);
             LayoutElement le = reset.gameObject.AddComponent<LayoutElement>();
             le.preferredHeight = 32f;
             le.minHeight = 32f;
             reset.onClick.AddListener(OnResetClicked);
 
-            Text hint = NewText(_tuneContent, "关闭 PDA 时自动保存", 14, DimColor, TextAnchor.MiddleCenter);
+            Text hint = NewText(_tuneContent,
+                UiText.T("关闭 PDA 时自动保存", "Saved when the PDA closes"),
+                14, DimColor, TextAnchor.MiddleCenter);
             LayoutElement hintLe = hint.gameObject.AddComponent<LayoutElement>();
             hintLe.preferredHeight = 22f;
             hintLe.minHeight = 22f;
@@ -1687,8 +1779,11 @@ namespace MikuPlayerReplacer
                 // The mod no longer ships a model, so an empty list is a normal
                 // first-run state and has to say what to do about it.
                 Text empty = NewText(_modelContent,
-                    "没有找到模型。\n请把模型文件夹放进\nBepInEx\\plugins\\" +
-                    "PlayerModelReplacer\\Models\\\n然后点下面的“刷新列表”。",
+                    UiText.T(
+                        "没有找到模型。\n请把模型文件夹放进\nBepInEx\\plugins\\" +
+                        "PlayerModelReplacer\\Models\\\n然后点下面的“刷新列表”。",
+                        "No models found.\nPut a model folder in\nBepInEx\\plugins\\" +
+                        "PlayerModelReplacer\\Models\\\nthen click \"Refresh list\" below."),
                     14, DimColor, TextAnchor.UpperLeft);
                 LayoutElement emptyLayout = empty.gameObject.AddComponent<LayoutElement>();
                 emptyLayout.preferredHeight = 96f;
@@ -1718,7 +1813,7 @@ namespace MikuPlayerReplacer
                 string label = (highlighted ? "● " : "○ ") + p.ModelLabelAt(i);
                 if (worn)
                 {
-                    label += "（已穿戴）";
+                    label += UiText.T("（已穿戴）", " (worn)");
                 }
                 _modelLabels[i].text = label;
                 _modelButtons[i].targetGraphic.color = highlighted ? RowActiveColor : RowColor;
@@ -1784,7 +1879,9 @@ namespace MikuPlayerReplacer
             for (int i = 0; i < _parts.Count; i++)
             {
                 MaterialPart part = _parts[i];
-                string label = string.IsNullOrEmpty(part.Name) ? "未命名材质" : part.Name;
+                string label = string.IsNullOrEmpty(part.Name)
+                    ? UiText.T("未命名材质", "Unnamed material")
+                    : part.Name;
                 if (!string.IsNullOrEmpty(part.Texture))
                 {
                     label += "  (" + part.Texture + ")";
@@ -1842,7 +1939,7 @@ namespace MikuPlayerReplacer
             glowRt.pivot = new Vector2(1f, 0.5f);
             glowRt.sizeDelta = new Vector2(74f, 0f);
             glowRt.anchoredPosition = Vector2.zero;
-            view.Glow = BuildToggleParts(glowRt, "发光", false,
+            view.Glow = BuildToggleParts(glowRt, UiText.T("发光", "Glow"), false,
                 delegate(bool glow)
                 {
                     MikuPlayerReplacerPlugin plugin = Plugin;
@@ -2027,13 +2124,18 @@ namespace MikuPlayerReplacer
             le.preferredHeight = 30f;
             le.minHeight = 30f;
 
+            // English labels run longer than the four-character Chinese ones, so
+            // that language gets a wider label column and a shorter slider.
+            float labelWidth = UiText.English ? 156f : 124f;
+
             Text labelText = NewText(row, label, 16, DimColor, TextAnchor.MiddleLeft);
+            labelText.horizontalOverflow = HorizontalWrapMode.Overflow;
             RectTransform labelRt = labelText.rectTransform;
             labelRt.anchorMin = new Vector2(0f, 0f);
             labelRt.anchorMax = new Vector2(0f, 1f);
             labelRt.pivot = new Vector2(0f, 0.5f);
             labelRt.offsetMin = new Vector2(6f, 0f);
-            labelRt.offsetMax = new Vector2(124f, 0f);
+            labelRt.offsetMax = new Vector2(labelWidth, 0f);
 
             Text valueLabel = NewText(row, value.ToString("0.00"), 15, TextColor, TextAnchor.MiddleRight);
             valueText = valueLabel;
@@ -2047,7 +2149,7 @@ namespace MikuPlayerReplacer
             RectTransform sliderRt = NewRect("Slider", row);
             sliderRt.anchorMin = new Vector2(0f, 0f);
             sliderRt.anchorMax = new Vector2(1f, 1f);
-            sliderRt.offsetMin = new Vector2(128f, 9f);
+            sliderRt.offsetMin = new Vector2(labelWidth + 4f, 9f);
             sliderRt.offsetMax = new Vector2(-50f, -9f);
 
             Slider slider = sliderRt.gameObject.AddComponent<Slider>();
